@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+/* Palette: drafting paper + railway signalling. Contrast ratios against --color-paper:
+   ink 15.9:1, ink-2 7.6:1, v1 (blue) 7.9:1, v2 (vermilion) 5.1:1, ok 5.6:1, bad 8.2:1, hold 4.9:1 */
+@theme {
+  --color-paper: #efe8d8;
+  --color-paper-2: #e4dac2;
+  --color-paper-3: #d6caad;
+  --color-ink: #181714;
+  --color-ink-2: #4a463d;
+  --color-rule: #b9ad90;
+  --color-v1: #1f4690;
+  --color-v2: #b5300e;
+  --color-ok: #2b6e45;
+  --color-bad: #8c1d2f;
+  --color-hold: #8a5f00;
+
+  --font-sign: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --font-prose: "Newsreader", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+html {
+  background: var(--color-paper);
+}
+
+body {
+  color: var(--color-ink);
+  font-family: var(--font-prose);
+  font-size: 18px;
+  line-height: 1.55;
+  min-height: 100vh;
+  background-color: var(--color-paper);
+  /* faint drafting grid */
+  background-image:
+    linear-gradient(to right, rgba(24, 23, 20, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(24, 23, 20, 0.045) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
+
+::selection {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-ink);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.sign {
+  font-family: var(--font-sign);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Underlined mini-heading used instead of card chrome */
+.rule-head {
+  font-family: var(--font-sign);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  font-size: 15px;
+  border-bottom: 2px solid var(--color-ink);
+  padding-bottom: 4px;
+  margin-bottom: 10px;
+}
+
+@keyframes pulse-ring {
+  0% { opacity: 0.55; transform: scale(0.9); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
+.station-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulse-ring 1.6s ease-out infinite;
+}
+
+.token {
+  transition: transform 0.7s cubic-bezier(0.5, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .station-pulse { animation: none; opacity: 0.35; }
+  .token { transition: none; }
+  * { scroll-behavior: auto !important; }
+}
+
+.hatch {
+  background-image: repeating-linear-gradient(45deg, rgba(24, 23, 20, 0.28) 0 2px, transparent 2px 6px);
+}
