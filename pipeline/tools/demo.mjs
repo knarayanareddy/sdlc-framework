@@ -4,6 +4,7 @@
 // each one is a command whose exit code is recorded in a hash-chained ledger.
 //
 //   node pipeline/tools/demo.mjs [--keep]
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,9 +31,16 @@ git("init", "-q");
 git("add", "-A");
 git("commit", "-q", "-m", "example baseline");
 
+// G10 will not certify an unkeyed ledger, so the demo plays the part of the human who holds the
+// key: it is generated here and never written into the project the agent works in (2.9.0).
+const LEDGER_KEY = crypto.randomBytes(24).toString("hex");
+
 let failures = 0;
 function step(label, args, expected = 0) {
-  const res = spawnSync("node", [CLI, ...args, "--cwd", work], { encoding: "utf8" });
+  const res = spawnSync("node", [CLI, ...args, "--cwd", work], {
+    encoding: "utf8",
+    env: { ...process.env, PIPELINE_LEDGER_KEY: LEDGER_KEY },
+  });
   const okExit = res.status === expected;
   if (!okExit) failures++;
   console.log(`\n${paint.bold(`$ pipeline ${args.join(" ")}`)}  ${okExit ? paint.green(`exit ${res.status}`) : paint.red(`exit ${res.status}, wanted ${expected}`)}`);

@@ -156,3 +156,38 @@ test("an appended junk line makes the numbers NOT_VERIFIED instead of silently d
   assert.match(res.stdout, /the ledger does not verify/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// B-28: the counter used to read `^### (REQ|SEC|NFR)-\d+` and nothing else.
+test("## headings and table rows are counted, once each", () => {
+  const dir = project();
+  fs.writeFileSync(
+    path.join(dir, "docs/02-spec/SPEC.md"),
+    [
+      "# Spec",
+      "",
+      "## REQ-001 a member can add a link",
+      "## **REQ-002** a member can delete one",
+      "",
+      "| id | statement |",
+      "| --- | --- |",
+      "| SEC-001 | a member cannot read another's link |",
+      "| NFR-001 | p95 under 200 ms |",
+      "| REQ-001 | repeated here; still one requirement |",
+      "",
+    ].join("\n"),
+  );
+  const res = run(dir);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  const m = JSON.parse(fs.readFileSync(path.join(dir, "docs/12-eval/metrics.json"), "utf8"));
+  assert.equal(m.counts.requirements, 4, JSON.stringify(m.counts.requirementIds));
+  assert.deepEqual(m.counts.requirementIds, ["NFR-001", "REQ-001", "REQ-002", "SEC-001"]);
+});
+
+test("a spec the counter cannot read is NOT_VERIFIED, not zero requirements", () => {
+  const dir = project();
+  fs.writeFileSync(path.join(dir, "docs/02-spec/SPEC.md"), "# Spec\n\nWe will build a good product for members.\n");
+  const res = run(dir);
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /NOT_VERIFIED: .*no REQ-\/SEC-\/NFR- ids/);
+  assert.equal(fs.existsSync(path.join(dir, "docs/12-eval/metrics.json")), false, "no metrics file from an unreadable spec");
+});

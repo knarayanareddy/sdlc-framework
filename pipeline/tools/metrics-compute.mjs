@@ -64,11 +64,20 @@ const gateRows = [...lastByGate.values()];
 const byStatus = { passed: 0, failed: 0, NOT_VERIFIED: 0 };
 for (const g of gateRows) byStatus[g.status] = (byStatus[g.status] ?? 0) + 1;
 
-// Requirements: counted from the spec, not from memory.
+// Requirements: counted from the spec, not from memory. A heading regex used to be the whole
+// counter, so a spec that used `##` or a table reported `requirements: 0`, which reads as "the
+// spec has no requirements" rather than "the counter failed" (B-28). Any `##`–`######` heading
+// that starts with an id, or a table row whose first cell is one, counts; ids are deduplicated so
+// a requirement described in both a heading and a table is not counted twice.
 let requirements = null;
+let requirementIds = [];
 if (fs.existsSync(specCandidate)) {
   const spec = fs.readFileSync(specCandidate, "utf8");
-  requirements = (spec.match(/^###\s+(?:REQ|SEC|NFR)-\d+\b/gm) ?? []).length;
+  const ids = new Set();
+  for (const m of spec.matchAll(/^#{2,6}\s+\**((?:REQ|SEC|NFR)-\d+)\b/gm)) ids.add(m[1]);
+  for (const m of spec.matchAll(/^\|\s*\**((?:REQ|SEC|NFR)-\d+)\b/gm)) ids.add(m[1]);
+  requirementIds = [...ids].sort();
+  requirements = requirementIds.length;
   derivedFrom.spec = { path: specCandidate, sha256: sha256(spec) };
 }
 
@@ -123,6 +132,7 @@ const metrics = {
   gates: { total: gateRows.length, ...byStatus, notVerifiedList: gateRows.filter((g) => g.status === "NOT_VERIFIED").map((g) => g.gate) },
   counts: {
     requirements,
+    requirementIds,
     gates: Object.keys(progress.gates ?? {}).length,
     notVerified: Object.values(progress.gates ?? {}).filter((g) => g.status === "NOT_VERIFIED").length,
     blockers: (progress.blockers ?? []).length,
@@ -132,6 +142,18 @@ const metrics = {
   calibration,
   derivedFrom,
 };
+
+// Zero requirements is not a measurement: it means the spec does not look like a spec to this
+// counter. Exit 3 (NOT_VERIFIED) rather than publishing a number that says "none" (B-28).
+if (requirements === 0) {
+  console.log(
+    paint.yellow(
+      `NOT_VERIFIED: ${specCandidate} contains no REQ-/SEC-/NFR- ids in a ## heading or a table row, so the requirement count cannot be computed`,
+    ),
+  );
+  console.log("human command: give each requirement a `## REQ-001 …` heading, or a table row whose first cell is the id, then re-run");
+  process.exit(3);
+}
 
 if (asJson) {
   console.log(JSON.stringify(metrics, null, 2));

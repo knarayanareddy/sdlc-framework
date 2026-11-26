@@ -51,6 +51,9 @@ function pageParams(file) {
     .map((s) => s.slice(1, -1));
 }
 
+const frameworks = new Set();
+const markFramework = (name) => frameworks.add(name);
+
 const found = new Map();
 const add = (entry) => {
   if (!found.has(entry.id)) found.set(entry.id, entry);
@@ -58,7 +61,39 @@ const add = (entry) => {
 
 // `--root .` inside a repo that contains the pipeline itself used to enumerate the
 // pipeline's own tools as application entry points.
-const files = walk(root)
+// `walk` skips build/, out/ and dist/ so it does not index compiled output — but a Next app
+// router can legitimately own `app/api/build/route.ts`, and that route was invisible
+// (SECOND-OPINION-3 G-12). Those three names are skipped only when they hold no route file.
+function holdsRoutes(dir) {
+  const stack = [dir];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const p = path.join(cur, entry.name);
+      if (entry.isDirectory()) {
+        if (!["node_modules", ".git"].includes(entry.name)) stack.push(p);
+        continue;
+      }
+      if (/^(route|page)\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) return true;
+    }
+  }
+  return false;
+}
+
+const BUILDISH = new Set(["build", "out", "dist"]);
+function walkApp(dir, out = [], skip = new Set(["node_modules", ".git", ".next", "coverage", ".turbo", ".vercel"])) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (skip.has(entry.name)) continue;
+    if (BUILDISH.has(entry.name) && !holdsRoutes(path.join(dir, entry.name))) continue;
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkApp(p, out, skip);
+    else if (entry.isFile()) out.push(p);
+  }
+  return out;
+}
+
+const files = walkApp(root)
   .filter((f) => path.relative(root, f).split(path.sep)[0] !== "pipeline")
   .filter((f) => CODE.test(f) && !IGNORE_FILE.test(f));
 
@@ -68,6 +103,7 @@ for (const abs of files) {
 
   // 1. Route handlers: exported HTTP verbs.
   if (/\/route\.(ts|tsx|js|jsx|mjs|cjs)$/.test(rel)) {
+    markFramework("next-app");
     const base = routePathFromFile(rel);
     for (const m of text.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)) {
       add({ id: `route:${m[1]} ${base}`, kind: "route", file: rel, line: lineOf(text, m.index ?? 0), detail: `${m[1]} ${base}` });
@@ -79,6 +115,7 @@ for (const abs of files) {
 
   // 2. Pages with dynamic params.
   if (/\/page\.(tsx|jsx|ts|js)$/.test(rel)) {
+    markFramework("next-app");
     const base = routePathFromFile(rel) ?? "/";
     const params = pageParams(rel);
     add({
@@ -102,6 +139,38 @@ for (const abs of files) {
     }
     for (const m of text.matchAll(/export\s+const\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?\(/g)) {
       add({ id: `action:${rel}#${m[1]}`, kind: "serverAction", file: rel, line: lineOf(text, m.index ?? 0), detail: m[1] });
+    }
+  }
+
+  // 8. Express / Fastify / Hono route registrations. A server that mounts its routes in code
+  // was invisible to a Next-only enumerator, so its coverage ledger could be empty and "clean"
+  // (SECOND-OPINION-3 G-12).
+  const mounted = /\b[A-Za-z_$][\w$]*(?:\.\w+)?\.(get|post|put|patch|delete|all|use)\s*\(\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`)/g;
+  for (const m of text.matchAll(mounted)) {
+    const verb = String(m[1]).toUpperCase();
+    const route = (m[2] ?? m[3] ?? m[4] ?? "").trim();
+    if (!route.startsWith("/")) continue;
+    markFramework(/express|fastify|hono/.test(text) ? (/fastify/.test(text) ? "fastify" : /hono/.test(text) ? "hono" : "express") : "express");
+    add({
+      id: `route:${verb === "ALL" || verb === "USE" ? "ANY" : verb} ${route}`,
+      kind: "route",
+      file: rel,
+      line: lineOf(text, m.index ?? 0),
+      detail: `${verb} ${route} (mounted in code)`,
+    });
+  }
+
+  // 9. Next pages router: pages/api/** is a route whatever the method.
+  const pagesIdx = rel.indexOf("pages/api/");
+  if (pagesIdx !== -1) {
+    markFramework("next-pages");
+    const route = `/api/${rel
+      .slice(pagesIdx + "pages/api/".length)
+      .replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "")
+      .replace(/\/index$/, "")}`.replace(/\/\[([^\]]+)\]/g, "/:$1");
+    const methods = [...text.matchAll(/req\.method\s*===?\s*["'](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)["']/g)].map((m) => m[1]);
+    for (const verb of methods.length ? [...new Set(methods)] : ["ANY"]) {
+      add({ id: `route:${verb} ${route}`, kind: "route", file: rel, line: 1, detail: `${verb} ${route} (pages router)` });
     }
   }
 
@@ -140,6 +209,9 @@ const payload = {
   ...(stable ? {} : { generatedAt: new Date().toISOString() }),
   root: stable ? "." : path.basename(root),
   ...(scope ? { scoped: scope.label } : {}),
+  // Which route conventions were recognised. An empty list with code in the tree means this
+  // enumerator understood none of the app, which is NOT_VERIFIED, not an empty ledger.
+  frameworks: [...frameworks].sort(),
   counts,
   total: entrypoints.length,
   entrypoints,
@@ -159,6 +231,15 @@ if (outPath) {
       ),
     );
     console.log(`human command: node pipeline/tools/entrypoints.mjs --root <the app directory> --out ${path.relative(process.cwd(), outPath) || outPath}`);
+    process.exit(3);
+  }
+  if (entrypoints.every((e) => !["route", "page"].includes(e.kind))) {
+    console.log(
+      paint.yellow(
+        `NOT_VERIFIED: no route convention matched (recognised: next app router, next pages/api, express, fastify, hono; found: ${[...frameworks].join(", ") || "none"})`,
+      ),
+    );
+    console.log("human command: add the route registration to the coverage ledger by hand, or extend pipeline/tools/entrypoints.mjs");
     process.exit(3);
   }
 } else {

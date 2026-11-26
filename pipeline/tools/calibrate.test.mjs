@@ -188,13 +188,52 @@ test("status reports absent, calibrated and stale honestly", () => {
   assert.equal(good.status, 0, good.stdout);
   assert.match(good.stdout, /calibrated/);
 
+  // A version bump alone no longer invalidates the run: the artefact is keyed to the
+  // red-team prompts, not to a string that also changes for doc fixes (G-14, disagreement 3).
   const jsonPath = path.join(d, "calibration.json");
   const json = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   json.pipelineVersion = "0.0.1-ancient";
   fs.writeFileSync(jsonPath, JSON.stringify(json));
-  const stale = cli(["status", "--dir", d], d);
-  assert.equal(stale.status, 3);
-  assert.match(stale.stdout, /stale/);
+  assert.equal(cli(["status", "--dir", d], d).status, 0, "a tools-only version bump must not invalidate calibration");
+
+  // Editing what it was computed from does.
+  fs.appendFileSync(path.join(d, "findings.json"), " ");
+  const changed = cli(["status", "--dir", d], d);
+  assert.equal(changed.status, 3, changed.stdout);
+  assert.match(changed.stdout, /findings changed since it was scored/);
+});
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.2 — a calibration file is a claim, and status checks it (G-14)
+// ---------------------------------------------------------------------------
+test("a hand-written calibration file is not believed", () => {
+  const d = tmp();
+  fs.mkdirSync(path.join(d, "calibration"), { recursive: true });
+  fs.writeFileSync(
+    path.join(d, "calibration", "calibration.json"),
+    JSON.stringify({ calibrated: true, pipelineVersion: "2.8.2", recall: 1.0, planted: 10 }),
+  );
+  const r = cli(["status", "--dir", path.join(d, "calibration")], d);
+  assert.equal(r.status, 3, r.stdout);
+  assert.match(r.stdout, /cannot be trusted/);
+});
+
+test("a finding in another package is not a planted bug", () => {
+  // `packages/a/src/h.ts` and `packages/b/src/h.ts` used to normalise to the same path, so a
+  // finding in one package matched a bug planted in the other (G-14).
+  const d = tmp();
+  const plan = makePlan(d);
+  const bugs = makeAnswer(d, plan, { file: "packages/a/src/app/api/items/route.ts" });
+  fs.writeFileSync(
+    path.join(d, "findings.json"),
+    JSON.stringify({
+      run: "cal",
+      mode: "FULL",
+      findings: bugs.map((b, i) => ({ id: `F-${i + 1}`, title: b.class, class: b.class, severity: "high", status: "confirmed", evidenceTier: "T1", location: `packages/b/src/app/api/items/route.ts:${b.line}` })),
+    }),
+  );
+  const r = score(d);
+  assert.match(r.stdout + r.stderr, /found 0|recall 0\.0%/);
 });
 
 // ---- P3 · the recall number must not be obtainable by accident ------------------------
@@ -264,4 +303,46 @@ test("a sample smaller than the minimum cannot be calibrated", () => {
   assert.equal(r.status, 1);
   const report = fs.readFileSync(path.join(d, "report.md"), "utf8");
   assert.match(report, /below the minimum of 5/);
+});
+
+// B-32: a correct catch described in another vocabulary is a catch. It is counted, and the
+// report says how many were counted that way, so the number cannot be inflated silently.
+test("a finding at the planted line counts even when it names a different class", () => {
+  const d = tmp();
+  const plan = makePlan(d);
+  const bugs = makeAnswer(d, plan);
+  // Every finding has the wrong class, and the right place.
+  fs.writeFileSync(
+    path.join(d, "findings.json"),
+    JSON.stringify({
+      run: "cal",
+      mode: "FULL",
+      findings: bugs.map((b, i) => ({ id: `F-${i + 1}`, title: "the handler trusts an id from the URL", class: "input-validation", severity: "high", status: "confirmed", evidenceTier: "T1", location: `${b.file}:${b.line}` })),
+    }),
+  );
+  const r = score(d);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const cal = JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8"));
+  assert.equal(cal.recall, 1);
+  assert.equal(cal.matchedByLocation, bugs.length);
+  const report = fs.readFileSync(path.join(d, "report.md"), "utf8");
+  assert.match(report, /Matched by location only \| \d+/);
+});
+
+test("a finding nowhere near the planted line is still a miss", () => {
+  const d = tmp();
+  const plan = makePlan(d);
+  const bugs = makeAnswer(d, plan);
+  fs.writeFileSync(
+    path.join(d, "findings.json"),
+    JSON.stringify({
+      run: "cal",
+      mode: "FULL",
+      findings: bugs.map((b, i) => ({ id: `F-${i + 1}`, title: "the handler trusts an id from the URL", class: "input-validation", severity: "high", status: "confirmed", location: `${b.file}:${b.line + 400}` })),
+    }),
+  );
+  score(d);
+  const cal = JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8"));
+  assert.equal(cal.recall, 0, JSON.stringify(cal.perClass));
+  assert.equal(cal.matchedByLocation, 0);
 });

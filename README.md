@@ -20,14 +20,24 @@ Three things worth knowing before you trust a green run:
 - **The `dast` builtin is the repo's own harness** — the old default was an npm package that returns 404, so `gate G8 --builtin dast` could never run; stale scanner artifacts no longer count as output, and `--target` must be a plain URL (2.8.1).
 - **A compose file is checked, not linted** — `cap_add`, `seccomp:unconfined`, `pid: host`, `devices:` and writable binds fail `sandbox.mjs verify`, and `run --require-all` treats an unapplied control as a refusal (2.8.1).
 - **A round is a run directory** — `phase done 08 --run docs/08-redteam/run-2` records a second round, so the stop-at-3-FULL-rounds rule is reachable (2.8.1).
+- **The enumerator sees the framework you used** — Express/Fastify/Hono handlers registered in code, `pages/api/**`, and a route under `app/api/build/` (a directory called `build` is output only when it holds no routes). Code that matches no route convention is `NOT_VERIFIED`, not "0 entry points, nothing to cover" (2.9.0).
+- **A FULL round needs coverage evidence** — `mode: FULL` in `findings.json` now has to survive `coverage-gate`, and a round that cannot show it is recorded as `DIFF` with the reason in the ledger (2.9.0).
+- **Calibration is bound to what it scored** — `calibration.json` records the sha256 of its plan, blind answer and findings plus a fingerprint of the red-team prompts; `calibrate status` recomputes all four, so editing a plant or a prompt invalidates the number, while a pipeline version bump alone does not (2.9.0).
+- **The record says where it started and what it read** — the genesis entry pins `baseCommit`, and every gate pins the digest of each input it was judged on. `verify` re-hashes them: rewriting `findings.json` after the last gate that read it is drift, not history (2.9.0).
+- **G10 will not certify an unsealed ledger** — the final gate refuses to pass unless every entry carries an HMAC, which means `PIPELINE_LEDGER_KEY` was set where the build agent cannot read it. The demo plays the human and holds the key (2.9.0).
+- **Evidence has to read like evidence** — `--evidence` runs a substance check (a heading, readable prose, no placeholders, parseable JSON) and records it as a re-runnable command; slice logs must also name a requirement (2.9.0).
+- **The report cannot be stale** — any gate recorded after `FINAL-REPORT.md` exists regenerates it, instead of the report describing the ledger from before that gate (2.9.0).
+- **`pipeline verify --check` is read-only** — it re-runs only the recorded commands that cannot write files, and says which ones it left alone; the plain `verify` still re-runs everything (2.9.0).
+- **A catch counts even in other words** — calibration scores a finding at the planted line as a hit whatever class it named, and the report prints how many were matched that way (2.9.0).
+- **`live-check --run` exercises the transport you configured** (not the reference example), a run with zero `REQ-`/`SEC-`/`NFR-` ids is `NOT_VERIFIED` rather than "no requirements", and CI runs `live-check probe` so the tool's own environment assumptions are exercised (2.9.0).
 - **G11 is closed by a named human** — `gate G11 --attested-by <name>` with `PIPELINE_HUMAN=1`; the name is written into the hash chain. A convention, not a boundary: the builder shares the shell, so the attestation makes a bypass explicit rather than impossible.
-- **The ledger catches accidental edits, not a hostile agent.** It is an unkeyed hash chain inside a directory the build agent can write to. Deleting the tail lines and recomputing the links defeats it. What narrows that gap: the chain is cross-checked against `docs/progress.json` (so a truncated tail leaves gates progress still claims), every entry records a hash of the source tree the gate ran against, and setting `PIPELINE_LEDGER_KEY` outside the agent's environment seals each entry with an HMAC.
+- **The ledger catches accidental edits, not a hostile agent.** It is an unkeyed hash chain inside a directory the build agent can write to. Deleting the tail lines and recomputing the links defeats it. What narrows that gap: the chain is cross-checked against `docs/progress.json` (so a truncated tail leaves gates progress still claims), every entry records a hash of the source tree the gate ran against, and setting `PIPELINE_LEDGER_KEY` outside the agent's environment seals each entry with an HMAC — G10 will not certify the ledger without it (2.9.0).
 - **The spec freeze is enforced.** `docs/02-spec/SPEC.sha256` is re-checked by `verify`, by `trace-check` and by `phase done`; re-freezing requires a change note in `docs/02-spec/CHANGES.md`.
 
 ```bash
 node pipeline/tools/run-selftests.mjs      # every tool passes its own test
 node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
-node pipeline/bin/pipeline.mjs --help      # init | gate | verify | phase | freeze | estimate | report
+node pipeline/bin/pipeline.mjs --help      # init | gate | verify [--check] | phase | freeze | estimate | report
 ```
 
 One thing this repository will not do: claim a gate it did not run. A gate is a command

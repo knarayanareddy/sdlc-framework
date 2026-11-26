@@ -24,6 +24,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { ensureDir, ok, paint, parseArgs, readJson, writeJson } from "./lib/common.mjs";
 import { DEFAULT_FAMILIES, familyOf, mergeFamilies } from "./lib/families.mjs";
+import { loadSchema, validate } from "./lib/jsonschema.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE = path.resolve(HERE, "..");
@@ -239,18 +240,52 @@ function probeAll({ exercise = false } = {}) {
     const schema = run("schemathesis", ["--version"], { timeout: 20_000 });
     if (byId.scanners) byId.scanners.evidence.push({ what: "schemathesis --version", value: schema.status === 0 ? (schema.stdout || schema.stderr).trim().split("\n")[0] : `exit ${schema.status}`, from: "schemathesis --version" });
     // The transport is exercised against the staged envelope: request shape only, no network.
+    // It must be the transport the run will actually use: exercising the reference example and
+    // reporting READY said nothing about a configured PIPELINE_VERIFIER_CMD that would fail
+    // (SECOND-OPINION-3 B-24).
     const envelope = at("docs/13-live/verifier-envelope.json");
     if (fs.existsSync(envelope)) {
       const env = readJson(envelope);
-      const dry = run(process.execPath, [path.join(PIPELINE, "examples", "verifier-transport.example.mjs"), "--dry-run"], { input: JSON.stringify({ prompt: "dry run", envelope: env }), timeout: 30_000 });
+      const payload = JSON.stringify({ prompt: "dry run", envelope: env });
+      const configured = String(process.env.PIPELINE_VERIFIER_CMD ?? cfg.doc.verifier?.cmd ?? "").trim();
+      const reference = path.join(PIPELINE, "examples", "verifier-transport.example.mjs");
+      // A configured command is a shell command the user wrote; it is run through the shell with
+      // --dry-run appended, exactly as `verifier-route dispatch` would call it.
+      let dry;
+      if (configured) {
+        const res = spawnSync(`${configured} --dry-run`, {
+          shell: true,
+          cwd,
+          input: payload,
+          timeout: 30_000,
+          encoding: "utf8",
+        });
+        dry = { status: res.status ?? (res.error ? 127 : 1), stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+      } else {
+        dry = run(process.execPath, [reference, "--dry-run"], { input: payload, timeout: 30_000 });
+      }
+      const from = configured ? `${configured} --dry-run` : "examples/verifier-transport.example.mjs --dry-run";
       if (byId.verifier) {
-        byId.verifier.evidence.push({ what: "transport --dry-run", value: dry.status === 0 ? "request built" : `exit ${dry.status}`, from: "examples/verifier-transport.example.mjs --dry-run" });
-        if (dry.status === 0 && fs.existsSync(at("docs/13-live/verifier-request.json")) === false) writeJson(at("docs/13-live/verifier-request.json"), { ...JSON.parse(dry.stdout), at: new Date().toISOString() });
+        byId.verifier.evidence.push({ what: "transport --dry-run", value: dry.status === 0 ? "request built" : `exit ${dry.status}`, from });
+        if (configured) byId.verifier.evidence.push({ what: "transport exercised", value: "configured", from });
+        if (dry.status === 0 && fs.existsSync(at("docs/13-live/verifier-request.json")) === false) {
+          try {
+            writeJson(at("docs/13-live/verifier-request.json"), { ...JSON.parse(dry.stdout), at: new Date().toISOString() });
+          } catch {
+            /* a transport with no JSON on stdout proved nothing about request shape */
+          }
+        }
+        if (dry.status !== 0) {
+          byId.verifier.state = "partial";
+          byId.verifier.why = `${byId.verifier.why}; the transport exited ${dry.status} on --dry-run`;
+        }
       }
     }
   }
 
-  return { pipelineVersion: VERSION, probedAt: new Date().toISOString(), cwd, items };
+  const report = { pipelineVersion: VERSION, probedAt: new Date().toISOString(), cwd, items };
+  validateReport(report);
+  return report;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -274,6 +309,24 @@ function printReport(report) {
     ok("RESULT: PASS — all four P6 items are in place; the gates they feed can now be recorded as evidence");
   } else {
     console.log(paint.yellow(`RESULT: NOT_VERIFIED — ${total - ready} item(s) not in place. Every line above is the last mile; nothing else in P6 is outstanding.`));
+  }
+}
+
+// The report is the tool's only output, so it is checked against its own schema rather than in
+// the caller: a row that quietly lost a field is a NOT_VERIFIED environment, not a shorter
+// report (SECOND-OPINION-3 B-36 — CI never ran this tool, so nothing noticed).
+function validateReport(report) {
+  let schema;
+  try {
+    schema = loadSchema("live-readiness.schema.json");
+  } catch (error) {
+    console.log(paint.yellow(`NOT_VERIFIED: the readiness schema could not be read (${error.message})`));
+    process.exit(3);
+  }
+  const problems = validate(report, schema);
+  if (problems.length) {
+    console.log(paint.yellow(`NOT_VERIFIED: the readiness report does not satisfy live-readiness.schema.json — ${problems.slice(0, 3).join("; ")}`));
+    process.exit(3);
   }
 }
 

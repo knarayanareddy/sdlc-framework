@@ -12,6 +12,7 @@
 // Refusals are deliberate: a tracked answer file, an answer that does not match the plan, or a
 // DIFF round as evidence all make the recall number meaningless.
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureDir, fail, ok, paint, parseArgs, readJson, warn, writeJson } from "./lib/common.mjs";
@@ -27,6 +28,22 @@ const THRESHOLDS = Object.freeze({ overall: 0.7, minPlanted: 5 });
 // counts; above it, the target is ceil(0.7 x n) hits. A class that was never detected is a
 // failure at any sample size — that is evidence of absence, not a rate.
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+const sha256 = (text) => crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
+const sha256File = (file) => (fs.existsSync(file) ? sha256(fs.readFileSync(file, "utf8")) : null);
+
+// The rule is "changing the red-team prompts invalidates calibration", so these are what the
+// artefact is keyed to — not the version string, which changes for doc fixes and tool tweaks
+// that have nothing to do with the red team (SECOND-OPINION-3 G-14, disagreement 3).
+const PROMPT_FILES = [
+  "prompts/v2-08-redteam.md",
+  "prompts/v2-09-patch-and-validate.md",
+  "tools/lib/bug-classes.mjs",
+];
+const promptFingerprint = () => {
+  const rows = PROMPT_FILES.map((rel) => ({ path: rel, sha256: sha256File(path.resolve(here, "..", rel)) }));
+  return sha256(rows.map((r) => `${r.path}:${r.sha256}`).join("|"));
+};
 const pipelineVersion = (() => {
   try {
     return fs.readFileSync(path.resolve(here, "..", "VERSION"), "utf8").trim();
@@ -89,7 +106,15 @@ function isIgnored(file) {
   return { ignored: false };
 }
 
-const normalisePath = (p) => String(p ?? "").replace(/\\/g, "/").replace(/^\.\//, "").replace(/^.*?(?=src\/|app\/|lib\/|tests\/)/, "");
+// Only the noise is stripped: a leading `./` and the repo root. It used to cut everything
+// before the first src/|app/|lib/|tests/, so `packages/a/src/h.ts` and `packages/b/src/h.ts`
+// were the same path and a finding in one package matched a bug planted in the other
+// (SECOND-OPINION-3 G-14).
+const normalisePath = (p) => {
+  let out = String(p ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
+  while (out.startsWith("/")) out = out.slice(1);
+  return out;
+};
 
 // `src/a.ts`, `src/a.ts:12`, `src/a.ts:12:5` and `src/a.ts:12-20` all have to parse: the
 // old reader took the last colon-separated token, so a line:col location was read as the
@@ -114,23 +139,47 @@ const WINDOW = 25;
 function matchPlanted(bug, findings, taken) {
   const wanted = normaliseClass(bug.class);
   const { file } = parseLocation(bug.file);
+  const plantedLine = Number(bug.line);
+  const locate = (f) => {
+    const loc = parseLocation(f.location);
+    if (!samePath(loc.file, file)) return null;
+    const distance = plantedLine && loc.from ? Math.min(Math.abs(loc.from - plantedLine), Math.abs(loc.to - plantedLine)) : 0;
+    return { loc, distance };
+  };
+
+  // 1 · the class, in the right file, near the planted line.
   let best = null;
   let bestDistance = Infinity;
   for (const f of findings) {
     if (taken.has(f)) continue;
     const fc = normaliseClass([f.class, f.title, f.cwe, f.category].filter(Boolean).join(" "));
     if (wanted && fc !== wanted) continue;
-    const loc = parseLocation(f.location);
-    if (!samePath(loc.file, file)) continue;
-    const plantedLine = Number(bug.line);
-    const distance = plantedLine && loc.from ? Math.min(Math.abs(loc.from - plantedLine), Math.abs(loc.to - plantedLine)) : 0;
-    if (plantedLine && loc.from && distance > WINDOW) continue;
-    if (distance < bestDistance) {
+    const at = locate(f);
+    if (!at) continue;
+    if (plantedLine && at.loc.from && at.distance > WINDOW) continue;
+    if (at.distance < bestDistance) {
       best = f;
-      bestDistance = distance;
+      bestDistance = at.distance;
     }
   }
-  return best;
+  if (best) return { finding: best, by: "class" };
+
+  // 2 · the place, whatever the finding called it. A reviewer who describes a missing ownership
+  // check as "the handler trusts the id from the URL" has found the planted bug; scoring that a
+  // miss measured the plant's vocabulary, not the red team (B-32). Counted, and reported apart.
+  let near = null;
+  let nearDistance = Infinity;
+  for (const f of findings) {
+    if (taken.has(f)) continue;
+    const at = locate(f);
+    if (!at || !at.loc.from) continue;
+    if (plantedLine && at.distance > WINDOW) continue;
+    if (at.distance < nearDistance) {
+      near = f;
+      nearDistance = at.distance;
+    }
+  }
+  return near ? { finding: near, by: "location" } : null;
 }
 
 function cmdScore() {
@@ -171,9 +220,10 @@ function cmdScore() {
   const taken = new Set();
   const rows = (answer.bugs ?? []).map((bug) => {
     const hit = matchPlanted(bug, confirmed, taken);
-    if (hit) taken.add(hit);
-    return { planted: bug, matched: Boolean(hit), findingId: hit?.id ?? null };
+    if (hit) taken.add(hit.finding);
+    return { planted: bug, matched: Boolean(hit), findingId: hit?.finding?.id ?? null, by: hit?.by ?? null };
   });
+  const byLocation = rows.filter((r) => r.by === "location").length;
   const found = rows.filter((r) => r.matched).length;
   const recall = rows.length ? found / rows.length : 0;
   const plantedCount = rows.length;
@@ -194,8 +244,21 @@ function cmdScore() {
   const unplanted = confirmed.filter((f) => !rows.some((r) => r.findingId === f.id));
   const calibrated = sampleSufficient && found >= requiredHits && zeroClasses.length === 0;
 
+  // The file used to be a bag of numbers: a hand-written `{calibrated: true}` was believed.
+  // Record what produced it, so `status` can recompute instead of trusting (G-14).
+  const promptHashes = PROMPT_FILES.map((rel) => ({ path: rel, sha256: sha256File(path.resolve(here, "..", rel)) }));
   const result = {
     pipelineVersion: plan.pipelineVersion,
+    planSha256: sha256(fs.readFileSync(planPath, "utf8")),
+    answerSha256: sha256(fs.readFileSync(String(flags.answer), "utf8")),
+    findingsSha256: sha256(fs.readFileSync(String(flags.findings ?? "docs/08-redteam/run-1/findings.json"), "utf8")),
+    promptHashes,
+    promptFingerprint: promptFingerprint(),
+    sources: {
+      plan: path.relative(process.cwd(), planPath).split(path.sep).join("/"),
+      answer: path.relative(process.cwd(), String(flags.answer)).split(path.sep).join("/"),
+      findings: path.relative(process.cwd(), String(flags.findings ?? "docs/08-redteam/run-1/findings.json")).split(path.sep).join("/"),
+    },
     calibrated,
     recall,
     planted: plantedCount,
@@ -207,6 +270,7 @@ function cmdScore() {
     singleInstanceClasses: singleInstance,
     perClass,
     zeroRecallClasses: zeroClasses,
+    matchedByLocation: byLocation,
     unplantedConfirmed: unplanted.map((f) => f.id),
     findingsRound: findingsFile.mode ?? "unknown",
     example: plan.seed,
@@ -228,6 +292,7 @@ function cmdScore() {
     `| Planted | ${rows.length} |`,
     `| Confirmed by the red team | ${found} |`,
     `| Recall | ${(recall * 100).toFixed(1)}% (${found}/${plantedCount}; pass mark ${requiredHits}/${plantedCount}${sampleSufficient ? "" : ` — below the minimum of ${THRESHOLDS.minPlanted} planted bugs`}) |`,
+    `| Matched by location only | ${byLocation} (the finding named a different class; counted as a catch, not as a class hit) |`,
     `| Findings round | ${findingsFile.mode ?? "unknown"} |`,
     `| Plan seed | ${plan.seed} |`,
     "",
@@ -278,16 +343,50 @@ function cmdStatus() {
     process.exit(3);
   }
   const r = readJson(jsonPath);
-  const stale = r.pipelineVersion !== pipelineVersion;
-  if (r.calibrated && !stale) {
-    ok(`calibration: calibrated for ${r.pipelineVersion} — recall ${(r.recall * 100).toFixed(1)}% on ${r.planted} planted bugs`);
+
+  // A calibration file is a claim, and this is the check that decides whether to believe it.
+  // Before 2.8.2 it was believed on sight: `{"calibrated": true, "pipelineVersion": "2.7.0"}`
+  // printed "calibrated — recall 100.0% on undefined planted bugs" (SECOND-OPINION-3 G-14).
+  const problems = [];
+  if (!Number.isFinite(r.recall) || !Number.isFinite(r.planted)) problems.push("the file has no recall/planted numbers");
+  if (typeof r.calibrated !== "boolean") problems.push("the file does not say whether it is calibrated");
+  if (!r.sources || !r.sources.plan || !r.sources.answer) {
+    problems.push("the file does not name the plan and blind answer it was computed from");
+  } else {
+    const recompute = (key) => {
+      const rel = r.sources[key];
+      if (!rel) return `no ${key} recorded`;
+      if (!fs.existsSync(rel)) return `the ${key} it was computed from is gone (${rel})`;
+      const now = sha256(fs.readFileSync(rel, "utf8"));
+      if (r[`${key}Sha256`] !== now) return `the ${key} changed since it was scored (${rel})`;
+      return null;
+    };
+    for (const key of ["plan", "answer", "findings"]) {
+      const problem = recompute(key);
+      if (problem) problems.push(problem);
+    }
+  }
+  if (r.promptFingerprint && r.promptFingerprint !== promptFingerprint()) {
+    problems.push("the red-team prompts changed since the calibration was run");
+  }
+
+  const stale = r.pipelineVersion !== pipelineVersion && !r.promptFingerprint;
+  if (problems.length) {
+    console.log(paint.yellow(`NOT_VERIFIED: the calibration file cannot be trusted — ${problems.join("; ")}`));
+    console.log("human command: node pipeline/tools/calibrate.mjs plan --n 10 --seed <n> … then score it against a FULL round");
+    console.log('the report must say "red team not calibrated" next to any zero-finding claim');
+    process.exit(3);
+  }
+  if (r.calibrated) {
+    ok(`calibration: calibrated — recall ${(r.recall * 100).toFixed(1)}% on ${r.planted} planted bugs (prompts ${String(r.promptFingerprint).slice(0, 12)}…)`);
     process.exit(0);
   }
   console.log(paint.yellow(`NOT_VERIFIED: calibration is ${stale ? `stale (measured on ${r.pipelineVersion}, pipeline is ${pipelineVersion})` : "inconclusive"} — recall ${(r.recall * 100).toFixed(1)}%`));
   console.log("human command: node pipeline/tools/calibrate.mjs plan --n 10 --seed <n> --out calibration/planted.plan.json, then score it against a FULL round");
-  console.log("the report must say \"red team not calibrated\" next to any zero-finding claim");
+  console.log('the report must say "red team not calibrated" next to any zero-finding claim');
   process.exit(3);
 }
+
 
 function cmdClasses() {
   for (const c of BUG_CLASSES) console.log(`  ${c.id.padEnd(22)} ${c.severity.padEnd(9)} ${c.name}`);

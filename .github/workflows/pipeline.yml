@@ -42,6 +42,38 @@ jobs:
           node pipeline/tools/verifier-route.mjs status
           node pipeline/tools/calibrate.mjs status --dir /tmp/no-calibration || true
 
+      # B-36: the suite tested live-check's logic but nothing ever ran the tool, so its own
+      # environment assumptions were never exercised. It is allowed to find the runner bare
+      # (exit 3); it is not allowed to crash or to produce a report that does not parse.
+      - name: live-check probe runs here and produces a report
+        run: |
+          set +e
+          node pipeline/tools/live-check.mjs probe --json > "$RUNNER_TEMP/live.json"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+            echo "live-check probe exited $code (expected 0 = all ready, 3 = NOT_VERIFIED)"
+            exit 1
+          fi
+          node -e '
+            const report = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            if (!Array.isArray(report.items) || report.items.length !== 4) {
+              console.error("expected 4 P6 items, saw " + (report.items ?? []).length);
+              process.exit(1);
+            }
+            for (const item of report.items) {
+              if (!["ready", "partial", "blocked"].includes(item.state)) {
+                console.error(`${item.id}: unknown state ${item.state}`);
+                process.exit(1);
+              }
+              if (!item.next || !item.flips) {
+                console.error(`${item.id}: a report row without next/flips is not a plan`);
+                process.exit(1);
+              }
+            }
+            console.log("live-check probe: " + report.items.map((i) => `${i.id}=${i.state}`).join(", "));
+          ' "$RUNNER_TEMP/live.json"
+
       - name: the fuzzer finds a trusting server and passes a strict one
         run: node --test pipeline/tools/fuzz-api.test.mjs
 
