@@ -302,7 +302,19 @@ function cmdDispatch() {
   }
   verdict.dispatchedAt = verdict.dispatchedAt ?? new Date().toISOString();
   writeJson(out, verdict);
-  console.log(`verdict written to ${out}`);
+  // An attestation next to the verdict, written only by dispatch. It proves the transport ran
+  // and that this is the file it returned. It does not prove which model answered — nothing in
+  // a local process can — but a hand-written verdict no longer passes for a dispatched one
+  // (SECOND-OPINION-3 G-06).
+  const digest = sha256(fs.readFileSync(out, "utf8"));
+  writeJson(`${out}.attest`, {
+    verdictSha256: digest,
+    envelopeHash: env.envelopeHash,
+    transport: cmd,
+    exitCode: res.status,
+    at: new Date().toISOString(),
+  });
+  console.log(`verdict written to ${out} (sha256 ${digest.slice(0, 12)}…, attested by dispatch)`);
   checkVerdict(env, verdict, out);
 }
 
@@ -404,7 +416,25 @@ function cmdCheck() {
   if (recomputed !== env.envelopeHash) {
     fail("envelope was edited after routing (hash mismatch) — route it again");
   }
+  // A verdict without `dispatch`'s attestation is a file the builder wrote. Until 2.7.2 this
+  // check accepted one, which made "independent verification" a matter of typing (G-06).
+  const attestPath = `${verdictPath}.attest`;
+  if (!fs.existsSync(attestPath)) {
+    notVerified(
+      `${verdictPath} carries no ${path.basename(attestPath)}: it was not produced by dispatch, so it proves nothing about who answered`,
+      `node pipeline/tools/verifier-route.mjs dispatch --envelope ${envPath} --out ${verdictPath}`,
+    );
+  }
+  const attest = readJson(attestPath);
+  const digest = sha256(fs.readFileSync(verdictPath, "utf8"));
+  if (attest.verdictSha256 !== digest) {
+    fail(`${attestPath} does not match ${verdictPath} (sha256) — the verdict was edited after dispatch`);
+  }
+  if (attest.envelopeHash !== env.envelopeHash) {
+    fail(`${attestPath} answers a different envelope — dispatch again`);
+  }
   checkVerdict(env, verdict, verdictPath);
+  console.log(paint.dim(`attested: transport ${String(attest.transport).slice(0, 60)} at ${attest.at}`));
 }
 
 function cmdStatus() {

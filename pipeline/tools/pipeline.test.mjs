@@ -454,3 +454,71 @@ test("a human can close G11, and the attestation lands in the hash chain", () =>
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.7.2 — passed and verified have to mean something (G-03, G-04, G-05)
+// ---------------------------------------------------------------------------
+test("verify re-runs the ledger's command, and a tampered progress.json is drift", () => {
+  const dir = project("verify-tamper");
+  assert.equal(cli(dir, ["gate", "G7", "--builtin", "ledger"]).status, 0);
+
+  const file = path.join(dir, "docs", "progress.json");
+  const p = readJson(file);
+  p.gates.G7.command = "true";
+  fs.writeFileSync(file, JSON.stringify(p, null, 2));
+
+  const r = cli(dir, ["verify"]);
+  assert.equal(r.status, 1, `expected exit 1, got ${r.status}\n${r.stdout}${r.stderr}`);
+  assert.match(r.stderr, /progress\.json says the command was "true", the ledger says/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("--force leaves the override in the ledger and the report", () => {
+  const dir = project("force");
+  // Nothing has been done, so this phase has every check against it.
+  assert.equal(cli(dir, ["phase", "start", "12", "--force"]).status, 0);
+  const done = cli(dir, ["phase", "done", "12", "--force"]);
+  assert.equal(done.status, 0, done.stdout + done.stderr);
+
+  const ledger = fs.readFileSync(path.join(dir, "docs", "gate-ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const rows = ledger.filter((e) => e.gate === "P12");
+  assert.ok(rows.length >= 2, "starting and finishing a phase under --force must both be ledgered");
+  assert.equal(rows.at(-1).status, "forced", "a forced completion is not `passed`");
+  assert.ok(rows.at(-1).overridden.length > 0, "the checks it overrode must be recorded");
+  assert.equal(rows[0].status, "forced", "a forced start used to leave no entry at all");
+
+  const report = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.match(report, /## Forced/);
+  assert.match(report, /did not pass; a human overrode/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a typed --model is not independence evidence", () => {
+  const dir = project("independence");
+  fs.writeFileSync(path.join(dir, "pipeline.config.json"), JSON.stringify({ independence: { builderFamily: "anthropic" } }));
+  assert.equal(cli(dir, ["gate", "G7", "--builtin", "ledger", "--model", "gpt-5"]).status, 0);
+  assert.equal(cli(dir, ["report"]).status, 0);
+
+  const report = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  // 2.7.0 said: "every judged gate (G7, G9) was verified by a model outside anthropic",
+  // on the strength of this flag, with nothing dispatched.
+  assert.doesNotMatch(report, /was verified by a model outside/);
+  assert.match(report, /declared, not evidenced/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("--verdict without a dispatch attestation is refused", () => {
+  const dir = project("verdict-flag");
+  const forged = path.join(dir, "verdict.json");
+  fs.writeFileSync(forged, JSON.stringify({ model: "gpt-5", verdict: "confirmed" }));
+
+  const r = cli(dir, ["gate", "G7", "--builtin", "ledger", "--verdict", forged]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /\.attest/);
+  assert.notEqual(progressOf(dir).gates.G7?.status, "passed");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

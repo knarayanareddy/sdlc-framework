@@ -36,6 +36,8 @@ export const LEDGER_FIELDS = Object.freeze([
   "filesGivenToVerifier",
   "modelFamily",
   "attestedBy",
+  "verdictSha256",
+  "overridden",
   "prevHash",
   "hmac",
 ]);
@@ -181,6 +183,20 @@ export function verifyLedger(file, { progress = null, requireHmac = false, env =
       }
       if (e.status !== g.status) {
         return { ok: false, count: entries.length, error: `${gate}: progress.json says ${g.status}, the ledger says ${e.status}` };
+      }
+      // Status alone is not enough: `verify` re-runs whatever command progress.json names, so
+      // editing that field kept the status true while changing what would be re-run
+      // (SECOND-OPINION-3 G-03).
+      const norm = (v) => (v === undefined || v === null ? null : String(v));
+      if (norm(e.command) !== norm(g.command)) {
+        return {
+          ok: false,
+          count: entries.length,
+          error: `${gate}: progress.json says the command was ${JSON.stringify(norm(g.command))}, the ledger says ${JSON.stringify(norm(e.command))} — the ledger is the record`,
+        };
+      }
+      if (norm(e.commandSource) !== norm(g.commandSource)) {
+        return { ok: false, count: entries.length, error: `${gate}: progress.json says commandSource ${norm(g.commandSource)}, the ledger says ${norm(e.commandSource)}` };
       }
     }
     for (const [id, p] of Object.entries(progress.phases ?? {})) {
