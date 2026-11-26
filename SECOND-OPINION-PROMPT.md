@@ -1,5 +1,11 @@
 # Second-opinion review — copy everything below the line into Claude
 
+> **Superseded for `main` ≥ `b7fc97d` (pipeline 2.7.0).** This prompt reviews the build as it
+> stood at `72a73af`. That review happened, and its findings were answered in P0–P6
+> (`REVIEW-OF-SECOND-OPINION.md` §11–§16). For the current state use
+> **[`SECOND-OPINION-PROMPT-3.md`](./SECOND-OPINION-PROMPT-3.md)**, which reviews the repair
+> job instead — including whether the repairs can be bypassed.
+
 > **How to use this file.** Open the repository `https://github.com/knarayanareddy/sdlc-framework`
 > (branch `main`, at or after `420b560`), start a fresh Claude session with repo access, and paste
 > everything from `## 0` onward as your message. Nothing else is needed: no attachment, no private
