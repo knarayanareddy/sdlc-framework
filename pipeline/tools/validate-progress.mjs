@@ -60,6 +60,10 @@ for (const [id, g] of Object.entries(p.gates ?? {})) {
 for (const [id, ph] of Object.entries(p.phases ?? {})) {
   if (!PHASE_IDS.includes(id)) problems.push(`phases.${id}: not a known phase id`);
   if (!["started", "done", "blocked"].includes(ph.status)) problems.push(`phases.${id}: status must be started|done|blocked`);
+  // A forced phase is not a clean one: the checks it overrode have to be on the record.
+  if (ph.forced && !(Array.isArray(ph.overridden) && ph.overridden.length)) {
+    problems.push(`phases.${id}: forced, but nothing records what was overridden`);
+  }
 }
 
 if (!Array.isArray(p.blockers)) problems.push("blockers must be an array");

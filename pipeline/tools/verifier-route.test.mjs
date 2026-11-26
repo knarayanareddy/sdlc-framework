@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { familyOf, independence, candidateFamilies } from "./lib/families.mjs";
 import { appendLedger } from "./lib/ledger.mjs";
+import { sha256 } from "./lib/common.mjs";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -115,11 +116,22 @@ const verdictRunner = (d, makeBody) => {
   return spawnSync("node", [route, "check", "--envelope", path.join(d, "env.json"), "--verdict", file.replace(/\.mjs$/, ".mjs")], { encoding: "utf8", cwd: d });
 };
 
-// `check` reads a verdict FILE; write the JSON rather than a script.
+// `check` reads a verdict FILE, and since 2.7.2 it also wants the attestation `dispatch`
+// leaves next to it. Writing it here keeps the tests about the verdict's content; the absence
+// of an attestation is its own test below.
 const checkVerdictFile = (d, makeBody, extra = []) => {
   const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
   const vf = path.join(d, "verdicts.json");
   fs.writeFileSync(vf, JSON.stringify(makeBody(env)));
+  fs.writeFileSync(
+    `${vf}.attest`,
+    JSON.stringify({
+      verdictSha256: sha256(fs.readFileSync(vf, "utf8")),
+      envelopeHash: env.envelopeHash,
+      transport: "test transport",
+      at: new Date().toISOString(),
+    }),
+  );
   return cli(route, ["check", "--envelope", path.join(d, "env.json"), "--verdict", vf, ...extra], { cwd: d });
 };
 
@@ -337,4 +349,34 @@ test("an oversized file is truncated and the prompt says so", () => {
   assert.equal(env.files[0].truncated, true);
   assert.ok(env.files[0].text.length <= 200_000);
   assert.match(fs.readFileSync(promptFile, "utf8"), /truncated/);
+});
+
+// ---------------------------------------------------------------------------
+// P7 · 2.7.2 — a verdict is evidence only when dispatch produced it (G-06)
+// ---------------------------------------------------------------------------
+test("a hand-written verdict with no dispatch attestation is NOT_VERIFIED", () => {
+  const d = project();
+  assert.equal(routeIn(d).status, 0);
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  const vf = path.join(d, "forged.json");
+  // The builder holds the envelope, so it can echo the hash. Before 2.7.2 that was enough.
+  fs.writeFileSync(vf, JSON.stringify({ envelopeHash: env.envelopeHash, model: "gpt-5", claims: [{ id: "C1", verdict: "confirmed", evidence: ["src/items.ts:2"] }] }));
+
+  const r = cli(route, ["check", "--envelope", path.join(d, "env.json"), "--verdict", vf], { cwd: d });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /no \.attest|not produced by dispatch/);
+});
+
+test("a verdict edited after dispatch is rejected", () => {
+  const d = project();
+  assert.equal(routeIn(d).status, 0);
+  const vf = path.join(d, "verdicts.json");
+  fs.writeFileSync(vf, JSON.stringify({ envelopeHash: JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8")).envelopeHash, model: "gpt-5" }));
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  fs.writeFileSync(`${vf}.attest`, JSON.stringify({ verdictSha256: sha256(fs.readFileSync(vf, "utf8")), envelopeHash: env.envelopeHash, at: new Date().toISOString() }));
+  fs.writeFileSync(vf, JSON.stringify({ ...JSON.parse(fs.readFileSync(vf, "utf8")), model: "gemini-2.5-pro" }));
+
+  const r = cli(route, ["check", "--envelope", path.join(d, "env.json"), "--verdict", vf], { cwd: d });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /was edited after dispatch/);
 });

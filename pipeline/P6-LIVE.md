@@ -62,6 +62,8 @@ export PIPELINE_VERIFIER_KEY="<your key>"                 # never commit it; nev
 # 3. dispatch the envelope that prep built, then check the verdict against it
 node pipeline/tools/verifier-route.mjs dispatch --envelope docs/13-live/verifier-envelope.json --out docs/13-live/verdicts.json
 node pipeline/tools/verifier-route.mjs check --envelope docs/13-live/verifier-envelope.json --verdict docs/13-live/verdicts.json
+# dispatch also writes verdicts.json.attest; check refuses a verdict without one, and
+# `gate … --verdict docs/13-live/verdicts.json` records its sha256 so the report can cite it
 
 # 4. record the family on a gate so the ledger can prove independence
 node pipeline/bin/pipeline.mjs gate G9 --builtin independence --model gpt-5

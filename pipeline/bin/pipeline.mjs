@@ -355,6 +355,7 @@ function recordGate(gate, entry, extra = {}) {
     entry.commandSource ?? (entry.command ? "builtin" : entry.evidence ? "evidence" : "manual");
   const attestedBy =
     entry.attestedBy ?? (HUMAN_GATES.includes(gate) && flags["attested-by"] ? String(flags["attested-by"]) : null);
+  const verdict = attestedVerdict();
   progress.gates[gate] = {
     status: entry.status,
     command: entry.command ?? null,
@@ -364,6 +365,7 @@ function recordGate(gate, entry, extra = {}) {
     reason: entry.reason ?? null,
     humanCommand: entry.humanCommand ?? null,
     attestedBy,
+    verdictSha256: verdict?.sha256 ?? null,
     at: new Date().toISOString(),
     commit: commitSha(),
     ...extra,
@@ -384,11 +386,43 @@ function recordGate(gate, entry, extra = {}) {
       commit: commitSha(),
       evidence: entry.evidence ?? null,
       filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
-      modelFamily: flags.model ?? null,
+      modelFamily: flags.model ?? verdict?.model ?? null,
       attestedBy,
+      verdictSha256: verdict?.sha256 ?? null,
     },
     { cwd: projectRoot },
   );
+}
+
+// A verdict is evidence of independence only when `verifier-route dispatch` produced it. The
+// attestation proves the transport ran and that this file is the one it returned; it does not
+// prove which model answered, and the report says so (SECOND-OPINION-3 G-05/G-06).
+let verdictCache;
+function attestedVerdict() {
+  if (verdictCache !== undefined) return verdictCache;
+  verdictCache = null;
+  if (!flags.verdict) return null;
+  const file = abs(String(flags.verdict));
+  const attestFile = `${file}.attest`;
+  if (!fs.existsSync(file)) fail(`--verdict ${flags.verdict} does not exist`);
+  if (!fs.existsSync(attestFile)) {
+    fail(
+      `--verdict ${flags.verdict} has no ${path.basename(attestFile)}: it was not produced by \`verifier-route dispatch\`, so a typed flag is all it would prove`,
+    );
+  }
+  const body = fs.readFileSync(file, "utf8");
+  const digest = sha256(body);
+  const attest = readJson(attestFile);
+  if (attest.verdictSha256 !== digest) fail(`${attestFile} is for a different verdict (sha256 mismatch)`);
+  let verdict = {};
+  try {
+    verdict = JSON.parse(body);
+  } catch {
+    fail(`${flags.verdict} is not JSON`);
+  }
+  verdictCache = { sha256: digest, at: attest.at ?? null, transport: attest.transport ?? null, model: verdict.model ?? null, family: verdict.family ?? null };
+  console.log(paint.dim(`verdict ${digest.slice(0, 12)}… attested by dispatch${attest.at ? ` at ${attest.at}` : ""}`));
+  return verdictCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +484,11 @@ function writeReport() {
   const last = new Map(entries.map((e) => [e.gate, e]));
   const judged = required.filter((g) => last.has(g) && last.get(g).status !== "NOT_VERIFIED");
   const noModel = judged.filter((g) => !last.get(g).modelFamily);
+  // `--model gpt-5` used to be enough for the report to say "verified by a model outside
+  // anthropic" while nothing was dispatched. Only a verdict that `dispatch` produced and
+  // `gate --verdict` recorded carries `verdictSha256` (SECOND-OPINION-3 G-05).
+  const dispatched = judged.filter((g) => last.get(g).verdictSha256);
+  const undeclared = judged.filter((g) => last.get(g).modelFamily && !last.get(g).verdictSha256);
   const sameFamily = judged.filter((g) => {
     const e = last.get(g);
     if (!e?.modelFamily) return false;
@@ -460,11 +499,13 @@ function writeReport() {
     ? `**FAIL** — ${sameFamily.join(", ")} were verified inside the builder's own family (${builderFamily})`
     : noModel.length
       ? `**NOT_VERIFIED** — ${noModel.join(", ")} recorded no verifier model, so independence is unproven`
-      : builderFamily === "unknown"
-        ? "unproven — set independence.builderFamily so the pipeline can judge it"
-        : judged.length
-          ? `every judged gate (${judged.join(", ")}) was verified by a model outside ${builderFamily}`
-          : "no gate was judged: nothing recorded a verifier model";
+      : undeclared.length
+        ? `**declared, not evidenced** — ${undeclared.join(", ")} carry a verifier model typed by the builder (\`--model\`) but no dispatched verdict; run \`node pipeline/tools/verifier-route.mjs dispatch\` and pass \`--verdict\``
+        : builderFamily === "unknown"
+          ? "unproven — set independence.builderFamily so the pipeline can judge it"
+          : dispatched.length
+            ? `every judged gate (${dispatched.join(", ")}) was verified by a dispatched verdict outside ${builderFamily}`
+            : "no gate was judged: nothing recorded a verifier model";
 
   // metrics.json is either computed from evidence or hand-written. Say which: a report that
   // quotes hand-written numbers without saying so is the failure mode P5 exists to remove.
@@ -500,6 +541,24 @@ function writeReport() {
     "|---|---|---|---|---|",
     ...gateRows,
     "",
+    ...(() => {
+      const forced = Object.entries(progress.phases ?? {}).filter(([, ph]) => ph?.forced);
+      if (!forced.length) return [];
+      return [
+        "## Forced",
+        "",
+        "These phases were marked done while a check was failing. The checks did not pass; a human overrode them.",
+        "",
+        "| Phase | Recorded | Overridden |",
+        "|---|---|---|",
+        ...forced.flatMap(([id, ph]) =>
+          (ph.overridden ?? ["(no reason recorded)"]).map(
+            (why, i) => `| ${i === 0 ? id : ""} | ${ph.at ?? "—"} | \`${String(why).replace(/\|/g, "\\|").slice(0, 160)}\` |`,
+          ),
+        ),
+        "",
+      ];
+    })(),
     "## Not verified",
     "",
     notVerified.length
@@ -878,8 +937,17 @@ switch (command) {
 
     let drift = 0;
     let skipped = 0;
+    // The ledger is the record of what ran. progress.json is a convenience index that the
+    // builder can edit, so `verify` re-runs the ledger's command (SECOND-OPINION-3 G-03).
+    const ledgerEntry = new Map();
+    for (const e of readLedger(abs(cfg.ledger))) if (e.gate) ledgerEntry.set(e.gate, e);
+
     console.log(paint.bold("re-running every recorded gate (never trust the recorded status)"));
-    for (const [id, g] of targets) {
+    for (const [id, g0] of targets) {
+      const g = { ...g0 };
+      const fromLedger = ledgerEntry.get(id);
+      if (fromLedger && fromLedger.command) g.command = fromLedger.command;
+
       if (g.status === "NOT_VERIFIED") {
         console.log(`  ${id.padEnd(4)} ${paint.yellow("NOT_VERIFIED")} — not re-runnable; a human must run: ${g.humanCommand ?? "(no command recorded)"}`);
         skipped++;
@@ -947,9 +1015,33 @@ switch (command) {
         console.error("Fix the blocker, or re-run with --force and record why in docs/blockers.md.");
         process.exit(1);
       }
+      const forcedStart = blockers.length > 0;
       progress.phase = id;
-      progress.phases[id] = { status: "started", at: new Date().toISOString() };
+      progress.phases[id] = {
+        status: "started",
+        at: new Date().toISOString(),
+        ...(forcedStart ? { forced: true, overridden: blockers } : {}),
+      };
       writeProgress(progress);
+      if (forcedStart) {
+        // A forced start used to leave no trace at all: the phase simply began, and the report
+        // read as if it had been allowed (SECOND-OPINION-3 G-04).
+        warn(`phase ${id} started with --force over: ${blockers.join("; ")}`);
+        appendLedger(
+          abs(cfg.ledger),
+          {
+            phase: id,
+            gate: `P${id}`,
+            status: "forced",
+            command: `pipeline phase start ${id} --force`,
+            commandSource: "orchestrator-forced",
+            exitCode: 0,
+            commit: commitSha(),
+            overridden: blockers,
+          },
+          { cwd: projectRoot },
+        );
+      }
       ok(`phase ${id} started: ${spec.title}`);
       console.log(`prompt: ${path.relative(process.cwd(), path.join(PIPELINE_DIR, "prompts", spec.prompt))}`);
       break;
@@ -989,22 +1081,32 @@ switch (command) {
       for (const p of problems) console.error(`  - ${p}`);
       process.exit(1);
     }
-    progress.phases[id] = { ...progress.phases[id], status: "done", at: new Date().toISOString() };
+    const forced = problems.length > 0;
+    progress.phases[id] = {
+      ...progress.phases[id],
+      status: "done",
+      at: new Date().toISOString(),
+      ...(forced ? { forced: true, overridden: problems } : {}),
+    };
     progress.phase = nextPhase(id) ?? id;
     recordRound(progress, id);
     writeProgress(progress);
+    // `phase done --force` used to write `passed, exitCode 0` and drop the problem list, so an
+    // overridden phase was indistinguishable from one that met its own checks (G-04).
+    if (forced) warn(`phase ${id} marked done with --force over ${problems.length} problem(s); they are in the ledger and the report`);
     appendLedger(
       abs(cfg.ledger),
       {
         phase: id,
         gate: `P${id}`,
-        status: "passed",
-        command: `pipeline phase done ${id}`,
-        commandSource: "orchestrator",
+        status: forced ? "forced" : "passed",
+        command: `pipeline phase done ${id}${forced ? " --force" : ""}`,
+        commandSource: forced ? "orchestrator-forced" : "orchestrator",
         exitCode: 0,
         commit: commitSha(),
         filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
         modelFamily: flags.model ?? null,
+        ...(forced ? { overridden: problems } : {}),
       },
       { cwd: projectRoot },
     );

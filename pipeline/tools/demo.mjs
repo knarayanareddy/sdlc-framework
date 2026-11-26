@@ -117,7 +117,10 @@ step("final state", ["status"]);
 step("re-run every gate (never trust the record)", ["verify"]);
 
 // The final report is generated from the ledger, so it is the last place a false claim could
-// appear. Check that it still says the uncomfortable things.
+// appear. Check that it still says the uncomfortable things -- and that the two independence
+// gates below, which are recorded with `--model` and no dispatch, are reported as declared
+// rather than verified (SECOND-OPINION-3 G-05).
+
 const reportPath = path.join(work, "docs", "FINAL-REPORT.md");
 const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "";
 const required = [
@@ -127,6 +130,16 @@ const required = [
   ["What this report must not say", "the honesty footer"],
 ];
 const missing = required.filter(([needle]) => !report.includes(needle));
+// This demo passes --model gpt-5 / gemini-2.5-pro and dispatches nothing, so the honest
+// sentence is "declared, not evidenced". If the report says otherwise, it is lying.
+if (/was verified by a model outside/.test(report)) {
+  failures++;
+  console.log(`\n${paint.red("FINAL-REPORT.md claims a model verified a gate, but the demo never dispatched one")}`);
+}
+if (!/declared, not evidenced/.test(report)) {
+  failures++;
+  console.log(`\n${paint.red("FINAL-REPORT.md does not say the independence claim is unearned")}`);
+}
 if (missing.length) {
   failures++;
   console.log(`\n${paint.red(`FINAL-REPORT.md is missing: ${missing.map(([, label]) => label).join(", ")}`)}`);

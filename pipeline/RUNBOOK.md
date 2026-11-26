@@ -59,7 +59,7 @@ node pipeline/bin/pipeline.mjs phase done 01
 | FZ freeze | — | `phase done FZ` (hashes `SPEC.md`) |
 | 05 tests | G5 | `gate G5 --builtin trace:freeze,trace:check,unit` |
 | 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` (checks `plan:slices`: every id is delivered) |
-| 07 QA | G7 | `gate G7 --builtin types,lint,unit,build` |
+| 07 QA | G7 | `gate G7 --builtin types,lint,unit,build` (add `--verdict <file>` when a dispatched verifier answered, so the report can say so) |
 | 08 red team | G8 | `gate G8 --builtin entrypoints,coverage,findings` |
 | 09 patch | G9 | `gate G9 --builtin findings,coverage` |
 | 10 release | G10 | `report`, then `gate G10 --builtin ledger,progress` |
