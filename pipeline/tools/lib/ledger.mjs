@@ -32,6 +32,8 @@ export const LEDGER_FIELDS = Object.freeze([
   "exitCode",
   "commit",
   "tree",
+  "baseCommit",
+  "inputs",
   "evidence",
   "filesGivenToVerifier",
   "modelFamily",
@@ -141,12 +143,14 @@ export function appendLedger(file, entry, { cwd = process.cwd(), env = process.e
   return record;
 }
 
-export function verifyLedger(file, { progress = null, requireHmac = false, env = process.env } = {}) {
+export function verifyLedger(file, { progress = null, requireHmac = false, env = process.env, cwd = process.cwd() } = {}) {
   const { entries, error } = readLedgerSafe(file);
   if (error) return { ok: false, count: entries.length, error, entries };
   if (entries.length === 0) {
     return { ok: false, count: 0, error: "ledger is empty: no genesis entry" };
   }
+  const cwdForPins = cwd;
+  const pins = new Map();
   let prev = ZERO_HASH;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
@@ -164,7 +168,55 @@ export function verifyLedger(file, { progress = null, requireHmac = false, env =
         error: `entry ${i} (${e.gate ?? "?"}) carries no HMAC: set PIPELINE_LEDGER_KEY outside the build agent's environment and re-record`,
       };
     }
+    for (const [rel, digest] of Object.entries(e.inputs ?? {})) pins.set(rel, digest);
     prev = e.hash;
+  }
+
+  // The genesis entry pins the commit the whole run is diffed against. progress.baseCommit is
+  // written by the orchestrator but it lives in a file the agent can edit, so a builder that
+  // resets it makes every protected-path edit look older than the run (2.9.0 trust anchors).
+  const genesis = entries[0];
+  if (progress && progress.baseCommit !== undefined) {
+    if (!genesis.baseCommit) {
+      return {
+        ok: false,
+        count: entries.length,
+        error:
+          "the genesis entry carries no baseCommit: this ledger cannot say which commit the run started from, so protected-paths cannot be checked. Re-run `pipeline init --force` with the pinned release",
+        entries,
+      };
+    }
+    if (String(genesis.baseCommit) !== String(progress.baseCommit)) {
+      return {
+        ok: false,
+        count: entries.length,
+        error: `progress.json says baseCommit ${progress.baseCommit}, the genesis entry says ${genesis.baseCommit} — the ledger is the record`,
+        entries,
+      };
+    }
+  }
+
+  // Inputs a gate consumed (config, entrypoints, findings, …) are pinned by digest at the moment
+  // the gate is recorded. The newest pin per file wins, so a later gate that legitimately
+  // rewrites findings.json re-pins it; a rewrite after the last gate that read it does not.
+  if (progress && pins.size) {
+    for (const [rel, digest] of pins) {
+      const file = path.isAbsolute(rel) ? rel : path.join(cwdForPins, rel);
+      let now;
+      try {
+        now = sha256(fs.readFileSync(file, "utf8"));
+      } catch {
+        return { ok: false, count: entries.length, error: `${rel} was pinned by a gate and is now missing`, entries };
+      }
+      if (now !== digest) {
+        return {
+          ok: false,
+          count: entries.length,
+          error: `${rel} changed after the last gate that read it: pinned ${digest.slice(0, 12)}…, now ${now.slice(0, 12)}… — an input a gate passed on cannot be rewritten afterwards`,
+          entries,
+        };
+      }
+    }
   }
 
   // Cross-check against progress.json: the only defence against a truncated tail, because

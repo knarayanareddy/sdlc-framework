@@ -13,7 +13,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { appendLedger } from "./lib/ledger.mjs";
+import { appendLedger, verifyLedger } from "./lib/ledger.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE = path.resolve(HERE, "..");
@@ -50,6 +50,41 @@ function project(label = "p0") {
   git(dir, "commit", "-qm", "base");
   const init = cli(dir, ["init"]);
   assert.equal(init.status, 0, `init failed:\n${init.stdout}${init.stderr}`);
+  return dir;
+}
+
+
+// A file that is a document rather than 64 bytes of filler: one heading, something to read.
+function designDoc(dir, rel = "docs/03-design/design-brief.md") {
+  const file = path.join(dir, rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    [
+      "# Design brief",
+      "",
+      "For a small team that keeps a shared list. The register is quick and unglamorous: rows, ruled lines,",
+      "a small square checkbox, no card grid. The signature element is the row itself, which stays in place",
+      "while the title strikes through on mark-read, so REQ-001 costs no layout shift and SEC-001 stays visible.",
+      "Banned defaults avoided: centred hero, three icon cards, purple gradient.",
+      "",
+    ].join("\n"),
+  );
+  return rel;
+}
+
+// A project initialised with a chosen environment, for the tests that are about the ledger key:
+// `project()` inherits the caller's environment, and the demo runs with a key set.
+function keyedProject(label, env) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${label}-`));
+  git(dir, "init", "-q");
+  fs.mkdirSync(path.join(dir, "docs", "02-spec"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "02-spec", "SPEC.md"), SPEC);
+  fs.writeFileSync(path.join(dir, "README.md"), "# x\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "base");
+  const init = cli(dir, ["init"], env);
+  assert.equal(init.status, 0, init.stdout + init.stderr);
   return dir;
 }
 
@@ -113,8 +148,9 @@ test("--evidence cannot pass a command gate", () => {
   const human = cli(dir, ["gate", "G11", "--evidence", "README.md"]);
   assert.notEqual(human.status, 0);
   assert.equal(progressOf(dir).gates.G11.status, "NOT_VERIFIED");
-  // G3 is the evidence gate, and it still works.
-  assert.equal(cli(dir, ["gate", "G3", "--evidence", "README.md"]).status, 0);
+  // G3 is the evidence gate, and it still works -- on a document, not on 64 bytes of filler.
+  const doc = designDoc(dir);
+  assert.equal(cli(dir, ["gate", "G3", "--evidence", doc]).status, 0);
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -229,7 +265,7 @@ test("deleting the last ledger lines is caught against progress.json", () => {
   const dir = project("ledger");
   // G3 is the only evidence gate at 2.7.1; G4 is a command gate and refuses --evidence
   // (SECOND-OPINION-3 G-01), so the second gate is a real one: the ledger checking itself.
-  assert.equal(cli(dir, ["gate", "G3", "--evidence", "README.md"]).status, 0);
+  assert.equal(cli(dir, ["gate", "G3", "--evidence", designDoc(dir)]).status, 0);
   assert.equal(cli(dir, ["gate", "G0", "--builtin", "ledger"]).status, 0);
 
   const ledger = path.join(dir, "docs", "gate-ledger.jsonl");
@@ -578,5 +614,112 @@ test("after phase 05, deleting the baseline does not re-freeze the weakened test
   assert.match(again.stderr, /is missing and phase 05 is done/);
   assert.notEqual(progressOf(dir).gates.G5?.status, "passed");
 
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// 2.9.0 — trust anchors: the record says where it started and what it read
+// ---------------------------------------------------------------------------
+test("the genesis entry pins the base commit, and editing progress.json is caught", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "anchors-"));
+  const file = path.join(dir, "ledger.jsonl");
+  appendLedger(file, { phase: "00", gate: "GENESIS", status: "passed", baseCommit: "abc1234" }, { cwd: dir, env: {} });
+
+  assert.equal(verifyLedger(file, { progress: { baseCommit: "abc1234", gates: {} }, env: {} }).ok, true);
+  const moved = verifyLedger(file, { progress: { baseCommit: "deadbee", gates: {} }, env: {} });
+  assert.equal(moved.ok, false);
+  assert.match(moved.error, /progress\.json says baseCommit deadbee, the genesis entry says abc1234/);
+
+  // A ledger written before this existed cannot say which commit the run started from.
+  const old = path.join(dir, "old.jsonl");
+  appendLedger(old, { phase: "00", gate: "GENESIS", status: "passed" }, { cwd: dir, env: {} });
+  const legacy = verifyLedger(old, { progress: { baseCommit: "abc1234", gates: {} }, env: {} });
+  assert.equal(legacy.ok, false);
+  assert.match(legacy.error, /genesis entry carries no baseCommit/);
+
+  // No progress object: nothing to cross-check, the chain alone is fine.
+  assert.equal(verifyLedger(old, { env: {} }).ok, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("an input a gate was judged on cannot be rewritten afterwards", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pins-"));
+  const file = path.join(dir, "ledger.jsonl");
+  const findings = path.join(dir, "findings.json");
+  fs.writeFileSync(findings, '{"mode":"FULL","findings":[]}');
+  const digest = crypto.createHash("sha256").update(fs.readFileSync(findings, "utf8"), "utf8").digest("hex");
+  appendLedger(file, { phase: "08", gate: "G8", status: "passed", inputs: { "findings.json": digest } }, { cwd: dir, env: {} });
+
+  assert.equal(verifyLedger(file, { progress: { gates: {} }, cwd: dir, env: {} }).ok, true);
+
+  fs.writeFileSync(findings, '{"mode":"FULL","findings":[]} ');
+  const r = verifyLedger(file, { progress: { gates: {} }, cwd: dir, env: {} });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /findings\.json changed after the last gate that read it/);
+
+  // A later gate that legitimately reads the new content re-pins it.
+  const redigest = crypto.createHash("sha256").update(fs.readFileSync(findings, "utf8"), "utf8").digest("hex");
+  appendLedger(file, { phase: "09", gate: "G9", status: "passed", inputs: { "findings.json": redigest } }, { cwd: dir, env: {} });
+  assert.equal(verifyLedger(file, { progress: { gates: {} }, cwd: dir, env: {} }).ok, true);
+
+  fs.rmSync(findings);
+  const gone = verifyLedger(file, { progress: { gates: {} }, cwd: dir, env: {} });
+  assert.equal(gone.ok, false);
+  assert.match(gone.error, /was pinned by a gate and is now missing/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("G10 will not certify a ledger that carries no HMAC", () => {
+  // `project()` inherits the environment, and the demo runs with a key: this test is about the
+  // unkeyed case, so the whole project is created without one.
+  const dir = keyedProject("g10-seal", { PIPELINE_LEDGER_KEY: "" });
+  const r = cli(dir, ["gate", "G10", "--builtin", "progress"], { PIPELINE_LEDGER_KEY: "" });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout + r.stderr, /not sealed/);
+  const recorded = progressOf(dir).gates.G10;
+  assert.equal(recorded.status, "NOT_VERIFIED");
+  assert.equal(recorded.commandSource, "unsealed-ledger");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("G10 certifies a sealed ledger", () => {
+  const key = { PIPELINE_LEDGER_KEY: "a-key-the-agent-does-not-have" };
+  const dir = keyedProject("g10-key", key);
+  const r = cli(dir, ["gate", "G10", "--builtin", "progress"], key);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /ledger is HMAC-sealed/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a gate recorded after the report is written regenerates it (B-27)", () => {
+  const dir = project("report-stale");
+  assert.equal(cli(dir, ["report"]).status, 0);
+  const before = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.doesNotMatch(before, /REPORT-STALE-MARKER/);
+
+  const r = cli(dir, ["gate", "G12", "--not-verified", "--reason", "REPORT-STALE-MARKER: recorded after the report", "--human-command", "true"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const after = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.match(after, /REPORT-STALE-MARKER/, "the report still describes the ledger from before the gate");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("verify --check does not re-run a command that writes files", () => {
+  const dir = project("verify-check");
+  // G12's metrics command rewrites docs/12-eval/metrics.json. It is an output, so it is not
+  // pinned in the ledger: a re-run changes it, which is exactly what --check must not do.
+  assert.equal(cli(dir, ["gate", "G12", "--builtin", "metrics"]).status, 0);
+  const metricsFile = path.join(dir, "docs/12-eval/metrics.json");
+  assert.ok(fs.existsSync(metricsFile));
+  fs.writeFileSync(metricsFile, '{"hand":"edited"}');
+
+  const checked = cli(dir, ["verify", "--check"]);
+  assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+  assert.match(checked.stdout, /not re-run: the command writes files/);
+  assert.equal(fs.readFileSync(metricsFile, "utf8"), '{"hand":"edited"}', "the read-only check left the file alone");
+
+  const plain = cli(dir, ["verify"]);
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.notEqual(fs.readFileSync(metricsFile, "utf8"), '{"hand":"edited"}', "the plain verify re-ran the command");
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -7,6 +7,7 @@
 //   node pipeline/bin/pipeline.mjs gate G5 --builtin trace:check,unit
 //   node pipeline/bin/pipeline.mjs gate G7 --not-verified --reason "no browser" --human-command "npx playwright test"
 //   node pipeline/bin/pipeline.mjs verify            # re-run every recorded gate
+//   node pipeline/bin/pipeline.mjs verify --check    # the same, without re-running anything that writes
 //   node pipeline/bin/pipeline.mjs phase start 06
 //   node pipeline/bin/pipeline.mjs phase done 05
 //   node pipeline/bin/pipeline.mjs freeze --refreeze
@@ -169,7 +170,9 @@ function builtin(name) {
     case "quotes":
       return `node ${tool("quote-verify.mjs")} --extracts ${c.researchExtracts} --snapshots ${c.researchSnapshots} --log ${c.quoteLog} --write-ledger ${c.evidenceLedger}${c.fetchQuotes ? " --fetch" : ""}`;
     case "entrypoints":
-      return `node ${tool("entrypoints.mjs")} --root . --out ${c.entrypoints}`;
+      // --stable: the file a gate is judged on is pinned by digest, so it may not change when
+      // nothing about the app changed (a timestamp in it made every pin drift).
+      return `node ${tool("entrypoints.mjs")} --root . --out ${c.entrypoints} --stable`;
     case "coverage":
       return `node ${tool("coverage-gate.mjs")} --entrypoints ${c.entrypoints} --ledger ${c.coverageLedger}`;
     case "findings":
@@ -193,7 +196,7 @@ function builtin(name) {
     case "release":
       return `node ${tool("expect-files.mjs")} ${c.finalReport} README.md .env.example`;
     case "slices":
-      return `node ${tool("expect-files.mjs")} --glob "${c.slicesGlob}"`;
+      return `node ${tool("expect-files.mjs")} --glob "${c.slicesGlob}" --substance --require-id`;
     case "plan":
       // Substance, not existence: does the plan agree with itself? G4 cannot see slice logs
       // (they do not exist until phase 06), so slices are required by `plan:slices` instead.
@@ -359,6 +362,34 @@ function tail(text, lines = 12) {
   return parts.slice(-lines).join("\n");
 }
 
+// Files a gate decides on. They are hashed when the gate is recorded and re-hashed by `verify`:
+// the *newest* pin per file wins, so a later gate that legitimately rewrites findings.json
+// re-pins it, while a rewrite after the last gate that read it is drift (2.9.0 trust anchors).
+// pipeline.config.json is deliberately NOT here: it is a protected path whose edits are reported,
+// and the orchestrator itself tells the operator to edit independence.builderFamily after init.
+const PINNED_INPUTS = [
+  "entrypoints",
+  "coverageLedger",
+  "findings",
+  "apiContract",
+  "threatModel",
+  "authzMatrix",
+  "calibrationDir",
+  "baseline",
+  "specHash",
+];
+function pinInputs() {
+  const pins = {};
+  for (const key of PINNED_INPUTS) {
+    const rel = cfg[key];
+    if (!rel) continue;
+    const file = abs(key === "calibrationDir" ? path.join(rel, "calibration.json") : rel);
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) continue;
+    pins[key === "calibrationDir" ? path.join(rel, "calibration.json") : rel] = sha256(fs.readFileSync(file, "utf8"));
+  }
+  return Object.keys(pins).length ? pins : null;
+}
+
 function recordGate(gate, entry, extra = {}) {
   const progress = readProgress();
   const commandSource =
@@ -380,6 +411,9 @@ function recordGate(gate, entry, extra = {}) {
     commit: commitSha(),
     ...extra,
   };
+  // Any gate recorded after the report was written leaves it describing the previous ledger
+  // (B-27). Regenerate it here rather than asking the operator to remember `pipeline report`.
+  const reportExisted = fs.existsSync(abs(cfg.finalReport));
   if (!progress.gates[gate].command && !progress.gates[gate].evidence && entry.status === "passed") {
     progress.gates[gate].explicitApproval = true;
   }
@@ -399,9 +433,11 @@ function recordGate(gate, entry, extra = {}) {
       modelFamily: flags.model ?? verdict?.model ?? null,
       attestedBy,
       verdictSha256: verdict?.sha256 ?? null,
+      inputs: pinInputs(),
     },
     { cwd: projectRoot },
   );
+  if (reportExisted) writeReport({ quiet: true });
 }
 
 // A verdict is evidence of independence only when `verifier-route dispatch` produced it. The
@@ -441,16 +477,24 @@ function attestedVerdict() {
 // `report` is a function because it is now called from two places: the command, and the
 // end of phases 10-12, where a stale FINAL-REPORT.md is worse than none (REVIEW-OF-SECOND-OPINION.md P5).
 // `progress.rounds` is derived from the findings file, not typed (see lib/rounds.mjs).
+// Commands recorded in the ledger that write to the tree when re-run.
+const READS_ONLY_UNSAFE = /(entrypoints\.mjs|dast\.mjs run|metrics-compute\.mjs|calibrate\.mjs (plan|score|template)|tripwire\.mjs|freeze)/;
+
 function recordRound(progress, phaseId) {
   const before = JSON.stringify(progress.rounds ?? null);
-  const after = recordRoundFromFile(progress, phaseId, abs(cfg.findings));
+  // A FULL round is a coverage claim, so it is checked against the coverage ledger rather than
+  // taken from the findings file (G-13).
+  const coverage = run(builtin("coverage"), { cwd: projectRoot, timeout: 900_000 });
+  const after = recordRoundFromFile(progress, phaseId, abs(cfg.findings), { coverageVerified: coverage.code === 0 });
   if (!after) return;
   if (before !== JSON.stringify(after.rounds)) {
     console.log(paint.dim(`rounds recorded from ${cfg.findings}: FULL=${after.rounds.full} DIFF=${after.rounds.diff}`));
+    const last = (after.roundLog ?? []).at(-1);
+    if (last?.note) warn(`round ${phaseId}: ${last.note}`);
   }
 }
 
-function writeReport() {
+function writeReport({ quiet = false } = {}) {
   const progress = readProgress();
   const ledger = verifyLedger(abs(cfg.ledger));
   let entries = [];
@@ -605,8 +649,12 @@ function writeReport() {
 
   ensureDir(path.dirname(abs(cfg.finalReport)));
   fs.writeFileSync(abs(cfg.finalReport), body);
-  ok(`wrote ${cfg.finalReport}`);
-  console.log(`gate rows: ${GATE_IDS.length}, NOT_VERIFIED: ${notVerified.length}, blockers: ${progress.blockers?.length ?? 0}`);
+  if (quiet) {
+    console.log(paint.dim(`report regenerated after the gate: ${cfg.finalReport}`));
+  } else {
+    ok(`wrote ${cfg.finalReport}`);
+    console.log(`gate rows: ${GATE_IDS.length}, NOT_VERIFIED: ${notVerified.length}, blockers: ${progress.blockers?.length ?? 0}`);
+  }
 }
 
 switch (command) {
@@ -658,7 +706,19 @@ switch (command) {
       fs.writeFileSync(ledgerFile, "");
       appendLedger(
         ledgerFile,
-        { phase: "00", gate: "GENESIS", status: "passed", command: "pipeline init", commandSource: "orchestrator", exitCode: 0, commit: commitSha() },
+        {
+          phase: "00",
+          gate: "GENESIS",
+          status: "passed",
+          command: "pipeline init",
+          commandSource: "orchestrator",
+          exitCode: 0,
+          commit: commitSha(),
+          // Pinned here, not only in progress.json: progress.json is a file the agent can edit,
+          // and baseCommit is what protects every later protected-path check (2.9.0).
+          baseCommit,
+          inputs: pinInputs(),
+        },
         { cwd: projectRoot },
       );
     }
@@ -847,12 +907,18 @@ switch (command) {
           : `${gate} is a command gate: --evidence would record passed/exit 0 from a file the caller named, which is how nine gates were greened by 200 bytes of "a" (SECOND-OPINION-3 G-01)`;
         fail(why);
       }
-      const missing = evidence.filter((f) => !substantialFile(abs(f)));
-      if (missing.length) {
-        recordGate(gate, { status: "failed", evidence, exitCode: 1 });
-        fail(`evidence not found or empty: ${missing.join(", ")}`);
+      // Substance, not size: `--evidence` used to mean "these files exist and are ≥ 64 bytes",
+      // which a file of "a" satisfies (SECOND-OPINION-3 B-33). The check is a real command, so it
+      // is recorded and can be re-run by `verify`.
+      // the files come first: `parseArgs` would read the first path after --substance as its value.
+      const substanceCmd = `node ${tool("expect-files.mjs")} ${evidence.map((f) => JSON.stringify(f)).join(" ")} --substance`;
+      const substance = run(substanceCmd, { cwd: projectRoot, timeout: 300_000 });
+      if (substance.code !== 0) {
+        recordGate(gate, { status: "failed", evidence, exitCode: substance.code, command: substanceCmd });
+        if (substance.stdout) console.error(tail(substance.stdout, 12));
+        fail(`evidence is not substantial enough to close ${gate}`);
       }
-      recordGate(gate, { status: "passed", evidence, exitCode: 0, commandSource: "evidence" });
+      recordGate(gate, { status: "passed", evidence, exitCode: 0, command: substanceCmd, commandSource: "evidence" });
       ok(`${gate} passed on evidence: ${evidence.join(", ")}`);
       console.log(paint.dim("note: an evidence gate is a judgement call. A fresh reviewer must still read it (07)."));
       break;
@@ -879,6 +945,28 @@ switch (command) {
       }
       console.log(`gate ${gate} has no mechanical check by default. Suggested: --builtin ${(GATE_SUGGESTIONS[gate] ?? []).join(",")}`);
       fail("nothing to run. Use --builtin, --cmd, --evidence or --not-verified --reason … --human-command …");
+    }
+
+    // G10 is the gate that certifies the record. An unkeyed chain is tamper-evident only
+    // against careless edits: an agent that rewrites a line recomputes the hash and the chain
+    // still verifies. So G10 may not pass unless every entry carries an HMAC, which needs
+    // PIPELINE_LEDGER_KEY set where the agent cannot read it (2.9.0, SECOND-OPINION-3 item 4).
+    if (gate === "G10") {
+      const sealed = verifyLedger(abs(cfg.ledger), { requireHmac: true });
+      if (!sealed.ok) {
+        const reason = `the ledger is not sealed: ${sealed.error}`;
+        recordGate(gate, {
+          status: "NOT_VERIFIED",
+          reason,
+          humanCommand: `PIPELINE_LEDGER_KEY=<key held outside the agent> node pipeline/bin/pipeline.mjs init --force   # then re-record the gates`,
+          commandSource: "unsealed-ledger",
+        });
+        console.error(paint.red(`G10 refuses to certify an unsealed ledger`));
+        console.error(`  ${reason}`);
+        console.log(`\nG10 NOT_VERIFIED (recorded in ${cfg.ledger})`);
+        process.exit(3);
+      }
+      console.log(paint.dim("G10: ledger is HMAC-sealed"));
     }
 
     const joined = cmds.join(" && ");
@@ -927,6 +1015,7 @@ switch (command) {
   }
 
   case "verify": {
+    if (flags.check) console.log(paint.dim("read-only check: commands that write files are not re-run"));
     const progress = readProgress();
     let blocked = false;
 
@@ -941,6 +1030,7 @@ switch (command) {
     const ledgerCheck = verifyLedger(abs(cfg.ledger), {
       progress,
       requireHmac: Boolean(flags["require-hmac"]),
+      cwd: projectRoot,
     });
     if (!ledgerCheck.ok) {
       console.error(paint.red(`ledger: ${ledgerCheck.error}`));
@@ -969,6 +1059,15 @@ switch (command) {
 
       if (g.status === "NOT_VERIFIED") {
         console.log(`  ${id.padEnd(4)} ${paint.yellow("NOT_VERIFIED")} — not re-runnable; a human must run: ${g.humanCommand ?? "(no command recorded)"}`);
+        skipped++;
+        continue;
+      }
+      // `verify` re-runs the recorded commands, and some of them write files: the enumerator
+      // rewrites entrypoints.json, `dast run` clears and refills its artifact directory. That is
+      // fine for a release check and wrong for a read-only one, so --check runs only the commands
+      // that cannot change the tree and says which ones it left alone (review disagreement 4).
+      if (flags.check && READS_ONLY_UNSAFE.test(g.command ?? "")) {
+        console.log(`  ${id.padEnd(4)} ${paint.dim("not re-run: the command writes files; its inputs are pinned in the ledger and checked above")}`);
         skipped++;
         continue;
       }

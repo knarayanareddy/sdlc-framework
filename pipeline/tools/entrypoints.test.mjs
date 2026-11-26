@@ -163,3 +163,40 @@ test("--changed-since follows git and a scope that selects nothing is NOT_VERIFI
   assert.equal(empty.status, 3);
   assert.match(empty.stdout, /the scope \(under lib\) contains no entry points/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.2 — the enumerator understood Next.js only (G-12)
+// ---------------------------------------------------------------------------
+test("Express routes mounted in code are entry points", () => {
+  const dir = fixture({
+    "src/api/items.js": 'const app = require("express")();\napp.get("/api/items", list);\napp.post("/api/items", create);\napp.delete("/api/items/:id", remove);\n',
+  });
+  const out = enumerate(dir);
+  const ids = out.entrypoints.filter((e) => e.kind === "route").map((e) => e.id);
+  for (const id of ["route:GET /api/items", "route:POST /api/items", "route:DELETE /api/items/:id"]) {
+    assert.ok(ids.includes(id), `${id} missing from ${ids.join(", ")}`);
+  }
+  assert.ok(out.frameworks.includes("express"));
+});
+
+test("pages/api is a route, and a route under app/api/build/ is not skipped", () => {
+  const dir = fixture({
+    "pages/api/items/index.js": "export default function handler(req, res) { res.status(200).end(); }\n",
+    "app/api/build/route.ts": "export async function GET() { return Response.json([]); }\n",
+  });
+  const out = enumerate(dir);
+  const ids = out.entrypoints.filter((e) => e.kind === "route").map((e) => e.id);
+  assert.ok(ids.includes("route:ANY /api/items"), ids.join(", "));
+  assert.ok(ids.includes("route:GET /api/build"), "app/api/build/route.ts is a real route, not build output");
+});
+
+test("code that matches no route convention is NOT_VERIFIED", () => {
+  // Something is enumerated (the env read), so the "no entry points" branch cannot be what
+  // refuses this: the refusal is that no route convention was recognised at all.
+  const dir = fixture({ "src/lib/thing.ts": "export const key = process.env.API_KEY;\n" });
+  const out = path.join(dir, "entrypoints.json");
+  const res = spawnSync("node", [TOOL, "--root", dir, "--out", out, "--stable"], { encoding: "utf8" });
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /no route convention matched/);
+  assert.match(res.stdout, /recognised: next app router/);
+});

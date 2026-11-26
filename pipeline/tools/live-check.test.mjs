@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { validate, loadSchema } from "./lib/jsonschema.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const CALIBRATE = path.join(HERE, "calibrate.mjs");
 const TOOL = path.join(HERE, "live-check.mjs");
 const VERSION = fs.readFileSync(path.resolve(HERE, "..", "VERSION"), "utf8").trim();
 const schema = loadSchema("live-readiness.schema.json");
@@ -67,6 +68,35 @@ function minimalPath(keep = []) {
 
 const MINIMAL = minimalPath(["git"]);
 const HEADLESS = stubDir({}); // a PATH with no docker, nuclei or schemathesis
+
+// A calibration file is only evidence when it was produced by scoring a plan against a blind
+// answer, so the fixture runs the real tool rather than writing {"calibrated": true} by hand
+// (SECOND-OPINION-3 G-14: that used to be enough to turn this item green).
+function genuineCalibration(dir) {
+  const cal = path.join(dir, "calibration");
+  fs.mkdirSync(cal, { recursive: true });
+  const planPath = path.join(cal, "planted.plan.json");
+  const answerPath = path.join(cal, "planted.answer.json");
+  const findingsPath = path.join(dir, "docs/08-redteam/run-1/findings.json");
+  fs.mkdirSync(path.dirname(findingsPath), { recursive: true });
+
+  const plan = spawnSync("node", [CALIBRATE, "plan", "--n", "10", "--seed", "1729", "--out", planPath], { cwd: dir, encoding: "utf8" });
+  assert.equal(plan.status, 0, plan.stdout + plan.stderr);
+  const planned = JSON.parse(fs.readFileSync(planPath, "utf8"));
+  const bugs = planned.classes.map((c, i) => ({ id: `P${i + 1}`, class: c.id, file: "src/app/api/items/route.ts", line: 10 + i * 5, description: c.plant }));
+  fs.writeFileSync(answerPath, JSON.stringify({ pipelineVersion: planned.pipelineVersion, plantedBy: "planter", bugs }, null, 2));
+  fs.writeFileSync(
+    findingsPath,
+    JSON.stringify({
+      run: "cal",
+      mode: "FULL",
+      findings: bugs.map((b, i) => ({ id: `F-${i + 1}`, title: b.class, class: b.class, severity: "high", status: "confirmed", evidenceTier: "T1", location: `${b.file}:${b.line}` })),
+    }, null, 2),
+  );
+  const scored = spawnSync("node", [CALIBRATE, "score", "--plan", planPath, "--answer", answerPath, "--findings", findingsPath, "--out", path.join(cal, "calibration-report.md")], { cwd: dir, encoding: "utf8" });
+  assert.equal(scored.status, 0, scored.stdout + scored.stderr);
+  return JSON.parse(fs.readFileSync(path.join(cal, "calibration.json"), "utf8"));
+}
 
 function live(dir, args, { path: pathEnv = HEADLESS, env = {} } = {}) {
   // process.execPath, not "node": the PATH is replaced by stubs below.
@@ -157,23 +187,27 @@ test("one scanner is not two: nuclei alone is PARTIAL", () => {
   assert.equal(row(readiness(dir), "scanners").state, "ready");
 });
 
-test("a calibration measured on another pipeline version is not this version's calibration", () => {
-  const dir = project({ calibration: { pipelineVersion: "0.0.1", calibrated: true, recall: 0.9, planted: 10 } });
+test("a hand-written calibration file is not a calibration", () => {
+  // {"calibrated": true} with no plan behind it used to read as ready (G-14).
+  const dir = project({ calibration: { pipelineVersion: VERSION, calibrated: true, recall: 0.9, planted: 10 } });
   live(dir, ["probe"]);
   const calibration = row(readiness(dir), "calibration");
   assert.equal(calibration.state, "partial", calibration.why);
   assert.match(calibration.why, /does not cover/);
+});
 
-  const current = project({ calibration: { pipelineVersion: VERSION, calibrated: true, recall: 0.9, planted: 10 } });
-  live(current, ["probe"]);
-  assert.equal(row(readiness(current), "calibration").state, "ready");
+test("a calibration scored from a plan, a blind answer and the findings is ready", () => {
+  const dir = project();
+  genuineCalibration(dir);
+  const r = live(dir, ["probe"]);
+  const calibration = row(readiness(dir), "calibration");
+  assert.equal(calibration.state, "ready", calibration.why + "\n" + r.stdout);
+  assert.match(calibration.why, /calibrated for /);
 });
 
 test("all four in place: exit 0 and a PASS that names the gates they feed", () => {
-  const dir = project({
-    config: READY_CONFIG,
-    calibration: { pipelineVersion: VERSION, calibrated: true, recall: 0.9, planted: 10 },
-  });
+  const dir = project({ config: READY_CONFIG });
+  genuineCalibration(dir);
   const stubs = stubDir({ docker: 'if [ "$1" = "info" ]; then echo "24.0.7"; exit 0; fi\nexit 1', nuclei: "echo nuclei 3.1\nexit 0", schemathesis: "echo 4.0.0\nexit 0" });
   const r = live(dir, ["verify", "--run"], { path: stubs });
   assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -220,4 +254,40 @@ test("prep does not claim the phase is done, and still exits 3 on probe", () => 
   assert.equal(prep.status, 0, "prep is a preparation step; it has nothing to certify");
   assert.match(prep.stdout, /RESULT: NOT_VERIFIED/);
   assert.equal(live(dir, ["probe"]).status, 3);
+});
+
+// B-24: `verify --run` used to dispatch the reference example whatever transport was configured,
+// so a broken PIPELINE_VERIFIER_CMD still produced "transport --dry-run: request built".
+test("verify --run exercises the transport the run will use, not the reference example", () => {
+  const dir = project({ config: READY_CONFIG });
+  fs.mkdirSync(path.join(dir, "docs/13-live"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs/13-live/verifier-envelope.json"), JSON.stringify({ model: "gpt-5", messages: [] }));
+
+  // A transport that fails on --dry-run: the item may not say READY.
+  const broken = stubDir({ "bad-transport": "exit 7" });
+  const badTransport = path.join(broken, "bad-transport");
+  fs.chmodSync(badTransport, 0o755);
+  const bad = live(dir, ["verify", "--run"], {
+    path: stubDir({ docker: 'if [ "$1" = "info" ]; then echo 24.0.7; exit 0; fi\nexit 1', nuclei: "echo nuclei 3.1\nexit 0", schemathesis: "echo 4.0.0\nexit 0" }),
+    env: { PIPELINE_VERIFIER_CMD: `${badTransport} --envelope docs/13-live/verifier-envelope.json` },
+  });
+  const v1 = row(readiness(dir), "verifier");
+  assert.equal(v1.state, "partial", `${v1.why}\n${bad.stdout}`);
+  assert.ok(v1.evidence.some((e) => e.what === "transport --dry-run" && e.from.startsWith(badTransport)), JSON.stringify(v1.evidence));
+  assert.ok(v1.evidence.some((e) => e.what === "transport --dry-run" && /exit 7/.test(e.value)), JSON.stringify(v1.evidence));
+
+  // A transport that builds a request: the evidence names it, and the reference example is absent.
+  const good = stubDir({ "good-transport": 'if [ "$1" = "--dry-run" ]; then echo \'{"request":true}\'; exit 0; fi\nexit 1' });
+  const goodTransport = path.join(good, "good-transport");
+  fs.chmodSync(goodTransport, 0o755);
+  live(dir, ["verify", "--run"], {
+    path: stubDir({ docker: 'if [ "$1" = "info" ]; then echo 24.0.7; exit 0; fi\nexit 1', nuclei: "echo nuclei 3.1\nexit 0", schemathesis: "echo 4.0.0\nexit 0" }),
+    env: { PIPELINE_VERIFIER_CMD: `${goodTransport} --envelope docs/13-live/verifier-envelope.json` },
+  });
+  const v2 = row(readiness(dir), "verifier");
+  const dry = v2.evidence.find((e) => e.what === "transport --dry-run");
+  assert.ok(dry, JSON.stringify(v2.evidence));
+  assert.ok(dry.from.startsWith(goodTransport), dry.from);
+  assert.doesNotMatch(JSON.stringify(v2.evidence), /verifier-transport\.example\.mjs/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

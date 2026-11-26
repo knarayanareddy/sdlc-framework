@@ -139,7 +139,7 @@ The plan was already prepared by `prep`.
 
 ```bash
 # 0. throwaway branch, never merged
-git switch -c calibration/2.8.1
+git switch -c calibration/2.9.0
 
 # 1. the plan (prep made one; make your own to change n/seed/classes)
 node pipeline/tools/calibrate.mjs plan --n 10 --seed 1729 --out calibration/planted.plan.json
