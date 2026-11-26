@@ -1,7 +1,7 @@
 # v2-08 · Red team v2 (Cloudflare 6 phases + Trail of Bits lenses, on a deterministic floor)
 
 Input: repo at HEAD, `docs/04-architecture/*` (claims to test, not truth), `scanner-leads.json`, previous run ledgers
-Output: `docs/08-redteam/run-N/{architecture.md, entrypoints.json, scanner-leads.json, coverage-ledger.json, findings.json, evidence-tiers.json, REPORT.md, FINDINGS-DETAIL.md, NEEDS-VALIDATION.md}` and `tests/security/*`
+Output: `docs/08-redteam/run-<N>/{architecture.md, entrypoints.json, scanner-leads.json, coverage-ledger.json, findings.json, evidence-tiers.json, REPORT.md, FINDINGS-DETAIL.md, NEEDS-VALIDATION.md}` and `tests/security/*`
 Gate: feeds **G9**. Phase 08 completes when its three artifacts validate.
 
 ```bash
@@ -21,7 +21,7 @@ Audit this repository in **full audit mode**, standard profile (`deep` if it han
 
 ## 8.1 Deterministic floor (scripts, not models)
 
-Store raw output under `run-N/floor/`. Every command below is real; anything that cannot run is
+Store raw output under `run-<N>/floor/`, and pass `--run docs/08-redteam/run-<N>` to `phase done 08` so a second round counts as a second round. Every command below is real; anything that cannot run is
 `NOT_VERIFIED` in `dast.json` and in the report.
 
 ```bash

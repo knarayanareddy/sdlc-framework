@@ -12,6 +12,7 @@
 // Exit: 0 written · 3 NOT_VERIFIED (a required source is missing, so no metrics are claimed).
 import fs from "node:fs";
 import { fail, ok, paint, parseArgs, readJson, sha256, writeJson } from "./lib/common.mjs";
+import { verifyLedger } from "./lib/ledger.mjs";
 
 const { flags } = parseArgs();
 const progressPath = String(flags.progress ?? "docs/progress.json");
@@ -35,18 +36,20 @@ if (!fs.existsSync(ledgerPath)) notVerified(`no gate ledger at ${ledgerPath}`, `
 if (!fs.existsSync(progressPath)) notVerified(`no progress file at ${progressPath}`, `node pipeline/bin/pipeline.mjs init`);
 
 const ledgerText = fs.readFileSync(ledgerPath, "utf8");
-const entries = ledgerText
-  .split("\n")
-  .filter((l) => l.trim())
-  .map((l) => {
-    try {
-      return JSON.parse(l);
-    } catch {
-      return null;
-    }
-  })
-  .filter(Boolean);
 const progress = readJson(progressPath);
+
+// The clue is in the file name: the header claimed the numbers come from a ledger that "cannot
+// be faked because gate-ledger verify checks its chain" -- and this tool never ran that check,
+// so an edited line or an appended junk line was silently dropped and the run said PASS
+// (SECOND-OPINION-3 G-15).
+const ledgerCheck = verifyLedger(ledgerPath, { progress });
+if (!ledgerCheck.ok) {
+  notVerified(
+    `the ledger does not verify: ${ledgerCheck.error}`,
+    `node pipeline/tools/gate-ledger.mjs verify --path ${ledgerPath} --progress ${progressPath}`,
+  );
+}
+const entries = ledgerCheck.entries;
 const derivedFrom = {
   ledger: { path: ledgerPath, sha256: sha256(ledgerText), entries: entries.length },
   progress: { path: progressPath, sha256: sha256(fs.readFileSync(progressPath, "utf8")) },
@@ -54,7 +57,9 @@ const derivedFrom = {
 
 // Gates: the last entry per gate wins, the same rule `independence.mjs` uses.
 const lastByGate = new Map();
-for (const e of entries) if (e.gate) lastByGate.set(e.gate, e);
+// Phase rows (`P12`) are ledger entries too, but they are not gates: counting them inflated
+// "gates recorded" by one per phase.
+for (const e of entries) if (e.gate && /^G\d+$/.test(String(e.gate))) lastByGate.set(e.gate, e);
 const gateRows = [...lastByGate.values()];
 const byStatus = { passed: 0, failed: 0, NOT_VERIFIED: 0 };
 for (const g of gateRows) byStatus[g.status] = (byStatus[g.status] ?? 0) + 1;

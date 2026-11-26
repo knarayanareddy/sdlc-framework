@@ -143,7 +143,7 @@ export function appendLedger(file, entry, { cwd = process.cwd(), env = process.e
 
 export function verifyLedger(file, { progress = null, requireHmac = false, env = process.env } = {}) {
   const { entries, error } = readLedgerSafe(file);
-  if (error) return { ok: false, count: entries.length, error };
+  if (error) return { ok: false, count: entries.length, error, entries };
   if (entries.length === 0) {
     return { ok: false, count: 0, error: "ledger is empty: no genesis entry" };
   }
@@ -207,5 +207,5 @@ export function verifyLedger(file, { progress = null, requireHmac = false, env =
     }
   }
 
-  return { ok: true, count: entries.length, error: null };
+  return { ok: true, count: entries.length, error: null, entries };
 }

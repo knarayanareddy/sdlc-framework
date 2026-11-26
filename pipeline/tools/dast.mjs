@@ -53,6 +53,7 @@ const TOOLS = [
   },
   {
     name: "pipeline-fuzz",
+    internal: true,
     detect: "node -e 0",
     install: "(built in, no install)",
     command: (target, contract) => `node ${path.join(here, "fuzz-api.mjs")} --base ${target} --contract ${contract?.path ?? "api-contract.json"} --out fuzz.json`,
@@ -63,8 +64,12 @@ const TOOLS = [
 ];
 
 function detect(spec) {
+  if (spec.internal) return true;
   const res = spawnSync(spec.detect, { shell: true, encoding: "utf8", timeout: 20_000 });
-  return res.status === 0;
+  // Exit 0 is not "installed": a stub that prints nothing and returns 0 used to make
+  // `live-check probe` say READY scanners and `dast plan` say available (SECOND-OPINION-3 G-19).
+  if (res.status !== 0) return false;
+  return `${res.stdout ?? ""}${res.stderr ?? ""}`.trim().length > 0;
 }
 
 function cmdPlan() {
@@ -184,6 +189,13 @@ function cmdRun() {
     console.log(`human command: start the production build and re-run with --target http://127.0.0.1:3000`);
     process.exit(3);
   }
+  // The target is interpolated into a shell command, so it has to be a URL and nothing else.
+  // `--target 'http://x; echo INJECTED > pwned.txt'` used to run the echo (G-17).
+  if (!/^https?:\/\/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$/.test(target)) {
+    console.log(paint.yellow(`NOT_VERIFIED: --target is not a plain http(s) URL: ${JSON.stringify(target)}`));
+    console.log(`human command: node pipeline/tools/dast.mjs run --target http://127.0.0.1:3000 --contract api-contract.json`);
+    process.exit(3);
+  }
 
   const results = [];
   for (const tool of TOOLS) {
@@ -206,6 +218,9 @@ function cmdRun() {
     // not a clean scan — it is a scan we could not read. Counting it as `ran` turned a
     // dead target into RESULT: RAN (F-05).
     const candidates = [path.join(outDir, tool.artifact), tool.artifact];
+    // A stale file from an earlier run is not output. Without this, a `nuclei` that exits 1
+    // with no output still "ran", because yesterday's nuclei.jsonl was sitting there (G-17).
+    for (const c of candidates) fs.rmSync(c, { force: true });
     // A stale .zap/report_json.json used to be picked up as the output of *any* scanner,
     // so a failed nuclei run silently ingested ZAP's report.
     if (tool.name === "zap-baseline") candidates.push(path.join(".zap", "report_json.json"));
@@ -231,6 +246,7 @@ function cmdRun() {
   }
 
   const ran = results.filter((r) => r.ran).length;
+  const available = results.filter((r) => !/not installed/.test(String(r.why ?? "")));
   const summary = {
     target,
     contract: contract?.path ?? null,
@@ -257,7 +273,18 @@ function cmdRun() {
     );
     process.exit(3);
   }
-  ok(`RESULT: RAN — ${ran} tool(s) produced output`);
+  // One of three scanners answering is not the floor. `--require-all-tools` (what the G8
+  // builtin passes) refuses to green a run that skipped an installed tool.
+  if (flags["require-all-tools"] && ran < available.length) {
+    console.log(
+      paint.yellow(
+        `RESULT: NOT_VERIFIED — ${ran} of ${available.length} available tool(s) produced a parseable artifact; --require-all-tools was given`,
+      ),
+    );
+    console.log(`human command: node pipeline/tools/dast.mjs run --target ${target} --contract ${contract?.path ?? "api-contract.json"}   # after fixing the skipped tool`);
+    process.exit(3);
+  }
+  ok(`RESULT: RAN — ${ran} of ${available.length} available tool(s) produced output`);
   process.exit(0);
 }
 

@@ -105,7 +105,15 @@ if (require.includes("threat")) {
 // ---- authz: every exposed route/action is in the matrix --------------------------------
 if (require.includes("authz")) {
   const fromEntries = exposedFromEntrypoints(entrypointsPath);
-  const exposed = fromEntries ?? exposedFromSpec(spec);
+  const fromSpec = exposedFromSpec(spec);
+  // An empty enumerator output used to *replace* the spec table -- `[]` is not nullish -- so
+  // `{"entrypoints": []}` produced "0/0 routes covered" and a PASS (SECOND-OPINION-3 G-12).
+  // The two sources are unioned, and an empty result is NOT_VERIFIED, not a clean sweep.
+  const merged = [];
+  for (const e of [...(fromEntries ?? []), ...(fromSpec ?? [])]) {
+    if (!merged.some((m) => m.label === e.label)) merged.push(e);
+  }
+  const exposed = merged.length ? merged : null;
   if (!exposed) {
     notVerified.push({ check: "authz", detail: "no entrypoints.json and no API contract table to take routes from", human: `node pipeline/tools/plan-check.mjs --entrypoints <entrypoints.json>, or add the §API contract table to ${specPath}` });
     checks.push({ check: "authz", state: "NOT_VERIFIED", detail: "no source of routes/actions" });
@@ -113,8 +121,17 @@ if (require.includes("authz")) {
     notVerified.push({ check: "authz", detail: `no authorization matrix at ${authzPath}`, human: `write ${authzPath} with a row per route (${exposed.map((e) => e.label).join(", ")})` });
     checks.push({ check: "authz", state: "NOT_VERIFIED", detail: `no authorization matrix at ${authzPath}` });
   } else {
-    const matrix = fs.readFileSync(authzPath, "utf8");
-    const unknown = exposed.filter((e) => !matrix.includes(e.label));
+    // A substring match let `GET /api/items` pass on a row for `GET /api/items/:id`, and a
+    // sentence anywhere in the file counted as a row (B-23). Cells only.
+    const matrixCells = new Set(
+      fs
+        .readFileSync(authzPath, "utf8")
+        .split("\n")
+        .filter((line) => line.trim().startsWith("|"))
+        .flatMap((line) => line.replace(/^\||\|$/g, "").split("|"))
+        .map((cell) => cell.replace(/`/g, "").trim()),
+    );
+    const unknown = exposed.filter((e) => !matrixCells.has(e.label));
     checks.push({ check: "authz", state: unknown.length ? "FAIL" : "PASS", detail: unknown.length ? `not in ${authzPath}: ${unknown.map((e) => e.label).join(", ")}` : `${exposed.length}/${exposed.length} routes covered` });
     for (const e of unknown) problems.push(`authz: ${e.id} (${e.source ?? "spec"}) is exposed but absent from ${authzPath}`);
   }

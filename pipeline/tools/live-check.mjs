@@ -69,7 +69,7 @@ function familiesTable(cfg) {
 // unless that file is the evidence the gate itself reads.
 // ---------------------------------------------------------------------------------------
 
-function probeVerifier(cfg, table) {
+function probeVerifier(cfg, table, { exercise = false } = {}) {
   const builderModel = cfg.doc.independence?.builderFamily && cfg.doc.independence.builderFamily !== "unknown" ? null : process.env.PIPELINE_BUILDER_MODEL ?? null;
   const declared = cfg.doc.independence?.builderFamily ?? null;
   const builder = declared && declared !== "unknown" ? declared : familyOf(builderModel, table);
@@ -103,11 +103,17 @@ function probeVerifier(cfg, table) {
     "node pipeline/tools/verifier-route.mjs dispatch --envelope docs/13-live/verifier-envelope.json --out docs/13-live/verdicts.json",
   ].filter(Boolean);
 
+  // probe reads strings; it dispatches nothing. READY is reserved for `verify --run`, which is
+  // the only command in this file that executes the transport (SECOND-OPINION-3 G-19).
   return {
     id: "verifier",
     title: "a verifier model from another family, with a transport",
-    state: wrong.length ? "partial" : absent.length ? "blocked" : "ready",
-    why: missing.length ? missing.join("; ") : `${family} verifies ${builder}`,
+    state: wrong.length ? "partial" : absent.length ? "blocked" : exercise ? "ready" : "partial",
+    why: missing.length
+      ? missing.join("; ")
+      : exercise
+        ? `${family} verifies ${builder}; the transport was exercised`
+        : `${family} verifies ${builder} — configured, not executed; \`live-check verify --run\` is what dispatches`,
     next,
     accept: "verifier-route.mjs check --envelope docs/13-live/verifier-envelope.json --verdict docs/13-live/verdicts.json exits 0, and the ledger row records modelFamily",
     flips: "G9 --builtin independence (and G7 when used there)",
@@ -129,7 +135,9 @@ function probeSandbox(cfg) {
   const dockerOnPath = Boolean(caps.docker?.available);
   // `command -v docker` proves a file exists, not that a daemon answers. Ask it, once.
   const dockerInfo = dockerOnPath ? run("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 20_000 }) : null;
-  const docker = dockerOnPath && dockerInfo?.status === 0;
+  // A stub that exits 0 with no output is not a daemon. `docker info --format` prints a version
+  // when something answers, and nothing when a script pretends to (G-19).
+  const docker = dockerOnPath && dockerInfo?.status === 0 && String(dockerInfo.stdout ?? "").trim().length > 0;
   const bubblewrap = Boolean(caps.bubblewrap?.available && caps.networkNamespace?.available);
   const ready = docker || bubblewrap;
   const next = [];
@@ -220,7 +228,7 @@ function probeCalibration(cfg, seed = 1729) {
 function probeAll({ exercise = false } = {}) {
   const cfg = config();
   const table = familiesTable(cfg);
-  const items = [probeVerifier(cfg, table), probeSandbox({ profile: cfg.doc.sandboxProfile ?? "docs/13-live/sandbox.compose.yml" }), probeScanners(), probeCalibration({ calibrationDir: cfg.doc.calibrationDir }, Number(flags.seed ?? 1729))];
+  const items = [probeVerifier(cfg, table, { exercise }), probeSandbox({ profile: cfg.doc.sandboxProfile ?? "docs/13-live/sandbox.compose.yml" }), probeScanners(), probeCalibration({ calibrationDir: cfg.doc.calibrationDir }, Number(flags.seed ?? 1729))];
 
   if (exercise) {
     // Exercises that need no credential and change nothing: prove the binary can answer, not

@@ -81,3 +81,15 @@ test("writes a log with one row per check", () => {
   assert.match(text, /FAIL\s+bad/);
   assert.match(text, /NOT_VERIFIED\s+missing/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.1 — a tripwire with no checks cannot fail (G-21)
+// ---------------------------------------------------------------------------
+test("no checks configured is NOT_VERIFIED, not a pass", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-"));
+  fs.writeFileSync(path.join(dir, "pipeline.config.json"), JSON.stringify({ tripwire: [] }));
+  const res = spawnSync("node", [TOOL], { cwd: dir, encoding: "utf8" });
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /no tripwire checks are configured/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

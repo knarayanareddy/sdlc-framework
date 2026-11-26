@@ -118,7 +118,7 @@ node pipeline/tools/dast.mjs plan                # confirm both are detected
 
 # against a running build, with the contract generated from your routes:
 node pipeline/tools/dast.mjs run --target http://127.0.0.1:3000 --contract api-contract.json --out docs/13-live
-node pipeline/tools/dast.mjs leads --file docs/13-live/nuclei.jsonl     # normalised leads, not findings
+node pipeline/tools/dast.mjs leads --from docs/13-live/nuclei.jsonl     # normalised leads, not findings
 node pipeline/bin/pipeline.mjs gate G8 --builtin dast
 ```
 
@@ -139,7 +139,7 @@ The plan was already prepared by `prep`.
 
 ```bash
 # 0. throwaway branch, never merged
-git switch -c calibration/2.7.0
+git switch -c calibration/2.8.1
 
 # 1. the plan (prep made one; make your own to change n/seed/classes)
 node pipeline/tools/calibrate.mjs plan --n 10 --seed 1729 --out calibration/planted.plan.json
@@ -166,7 +166,7 @@ Read **both** numbers: recall, and the `unplanted` list. 100 % recall with 40 in
 is a red team that reports everything. Below 5 planted bugs the verdict is `sampleSufficient:
 false` and nothing is calibrated.
 
-**Accepted when** `probe` says `READY calibration … calibrated for 2.7.0`, and
+**Accepted when** `verify --run` says `READY calibration … calibrated for the current VERSION`, and
 `calibration/calibration-report.md` (the score) quotes `n` next to recall.
 
 ---

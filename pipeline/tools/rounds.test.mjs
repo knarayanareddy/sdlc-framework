@@ -69,3 +69,23 @@ test("a fourth FULL round is visible to validate-progress, so the stop rule can 
   assert.notEqual(res.status, 0);
   assert.match(res.stdout, /caps FULL rounds at 3/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.1 — a round is a run directory, so the counter can reach 3 (G-13)
+// ---------------------------------------------------------------------------
+test("three red-team rounds in different run directories are three rounds", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "rounds-"));
+  const findings = path.join(d, "findings.json");
+  fs.writeFileSync(findings, JSON.stringify({ mode: "FULL" }));
+  const progress = { rounds: { full: 0, diff: 0 } };
+  for (const runDir of ["docs/08-redteam/run-1", "docs/08-redteam/run-2", "docs/08-redteam/run-3"]) {
+    progress.runDir = runDir;
+    recordRound(progress, "08", findings);
+  }
+  assert.equal(progress.rounds.full, 3, "the stop rule at 3 must be reachable");
+  assert.equal(progress.roundLog.length, 3);
+
+  // The same run directory twice is a re-run, not a new round.
+  recordRound(progress, "08", findings);
+  assert.equal(progress.rounds.full, 3);
+});

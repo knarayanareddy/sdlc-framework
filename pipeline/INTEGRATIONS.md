@@ -308,7 +308,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# NOT_VERIFIED: calibration has not been run for pipeline 2.6.0
+# NOT_VERIFIED: calibration has not been run for pipeline <VERSION>
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.

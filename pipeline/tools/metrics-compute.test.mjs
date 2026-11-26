@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validate, loadSchema } from "./lib/jsonschema.mjs";
+import { appendLedger } from "./lib/ledger.mjs";
 
 const TOOL = path.join(path.dirname(fileURLToPath(import.meta.url)), "metrics-compute.mjs");
 const schema = loadSchema("metrics.schema.json");
@@ -23,13 +24,16 @@ function project({ ledger = true, progress = true, findings = true, calibration 
   );
   if (ledger) {
     const rows = [
-      { gate: "G0", status: "passed", command: "init", exitCode: 0 },
-      { gate: "G1", status: "passed", command: "spec", exitCode: 0 },
-      { gate: "G9", status: "NOT_VERIFIED", command: "x", reason: "no rig", humanCommand: "run it" },
+      { gate: "G0", status: "passed", command: "init", commandSource: "builtin", exitCode: 0 },
+      { gate: "G1", status: "passed", command: "spec", commandSource: "builtin", exitCode: 0 },
+      { gate: "G9", status: "NOT_VERIFIED", command: "x", commandSource: "manual", exitCode: 3 },
+      { phase: "08", gate: "P08", status: "passed", command: "pipeline phase done 08", commandSource: "orchestrator", exitCode: 0 },
       // A re-run of G9 that passed afterwards: the last row must win.
-      { gate: "G9", status: "passed", command: "x", exitCode: 0 },
+      { gate: "G9", status: "passed", command: "x", commandSource: "manual", exitCode: 0 },
     ];
-    fs.writeFileSync(path.join(dir, "docs/gate-ledger.jsonl"), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    // Appended through the real writer, so the chain verifies. A hand-rolled JSONL fixture
+    // would be exactly the "edited ledger" that metrics-compute now refuses (G-15).
+    for (const r of rows) appendLedger(path.join(dir, "docs/gate-ledger.jsonl"), r, { cwd: dir });
   }
   if (progress) {
     fs.writeFileSync(
@@ -39,7 +43,7 @@ function project({ ledger = true, progress = true, findings = true, calibration 
         pipelineVersion: "2.6.0",
         phase: "12",
         phases: { "08": { status: "done" }, "11": { status: "blocked" } },
-        gates: { G0: { status: "passed" }, G9: { status: "passed" } },
+        gates: { G0: { status: "passed", command: "init", commandSource: "builtin" }, G9: { status: "passed", command: "x", commandSource: "manual" } },
         rounds: { full: 1, diff: 0 },
         blockers: [],
       }),
@@ -78,7 +82,7 @@ test("computes the numbers from the evidence and satisfies the schema", () => {
   assert.equal(m.gates.passed, 3);
   assert.equal(m.gates.NOT_VERIFIED, 0, "a gate re-run to green is not still NOT_VERIFIED");
   assert.equal(m.counts.requirements, 4);
-  assert.equal(m.counts.ledgerEntries, 4);
+  assert.equal(m.counts.ledgerEntries, 5, "four gate rows plus the phase row");
   assert.equal(m.counts.notVerified, 0);
   assert.equal(m.redTeam.confirmed, 1);
   assert.equal(m.redTeam.needsValidation, 1);
@@ -138,4 +142,17 @@ test("a hand-written metrics file is overwritten and can no longer pass as compu
   assert.equal(m.computed, true);
   assert.notEqual(m.note, "numbers by hand");
   assert.ok(m.derivedFrom, "the computed file names its sources");
+});
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.1 — the numbers come from a ledger that verifies (G-15)
+// ---------------------------------------------------------------------------
+test("an appended junk line makes the numbers NOT_VERIFIED instead of silently dropped", () => {
+  const dir = project();
+  assert.equal(run(dir).status, 0);
+  fs.appendFileSync(path.join(dir, "docs/gate-ledger.jsonl"), 'garbage line not json\n');
+  const res = run(dir);
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /the ledger does not verify/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

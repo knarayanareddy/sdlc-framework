@@ -22,8 +22,12 @@ export function recordRound(progress, phaseId, findingsPath) {
     return null;
   }
   if (!MODES.includes(mode)) return null;
-  const log = (progress.roundLog ?? []).filter((r) => r.phase !== String(phaseId));
-  log.push({ phase: String(phaseId), mode, at: new Date().toISOString() });
+  // Keyed by {phase, runDir}: making 08 and 09 the key meant a second pass through either phase
+  // replaced the first, so `rounds.full` could never exceed 2 and the stop-at-3 rule was
+  // unreachable (SECOND-OPINION-3 G-13). `--run` names the directory the round wrote.
+  const runDir = progress.runDir ?? null;
+  const log = (progress.roundLog ?? []).filter((r) => !(r.phase === String(phaseId) && (r.runDir ?? null) === runDir));
+  log.push({ phase: String(phaseId), runDir, mode, at: new Date().toISOString() });
   progress.roundLog = log;
   progress.rounds = {
     full: log.filter((r) => r.mode === "FULL").length,

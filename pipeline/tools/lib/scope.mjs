@@ -12,7 +12,16 @@ export function changedSince(ref, cwd = process.cwd()) {
   // Includes the working tree: a run before the commit still has to see its own edits.
   const res = spawnSync("git", ["diff", "--name-only", String(ref), "--"], { cwd, encoding: "utf8" });
   if (res.status !== 0) return { error: (res.stderr ?? "").trim() || `git diff against ${ref} failed`, files: [] };
-  return { error: null, files: res.stdout.split("\n").map((s) => s.trim()).filter(Boolean).map((f) => f.split(path.sep).join("/")) };
+  // A file the run just wrote is not tracked yet, and `git diff` cannot see it. A scoped run
+  // that omitted untracked files checked nothing while saying it had (SECOND-OPINION-3 G-20).
+  const untracked = spawnSync("git", ["ls-files", "-o", "--exclude-standard"], { cwd, encoding: "utf8" });
+  const list = [res.stdout, untracked.status === 0 ? untracked.stdout : ""]
+    .join("\n")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((f) => f.split(path.sep).join("/"));
+  return { error: null, files: [...new Set(list)] };
 }
 
 const under = (file, prefix) => {
@@ -37,10 +46,17 @@ export function resolveScope({ scope, changedSince: ref, cwd = process.cwd() } =
   }
   if (scope) {
     const prefixes = String(scope).split(",").map((s) => s.trim()).filter(Boolean);
+    // The two flags intersect. This used to return a prefix predicate as soon as --scope was
+    // present, so `--changed-since HEAD --scope pages` ignored the ref while the label claimed
+    // both, and `scopeFail` never fired because the result is an array, not a Set.
     files = files === null ? null : files.filter((f) => prefixes.some((p) => under(f, p)));
     parts.push(`under ${prefixes.join(", ")}`);
-    // A pure --scope run has no file list to intersect with, so it is a predicate.
-    return { label: parts.join(" and "), files, prefixes, matches: (file) => prefixes.some((p) => under(file, p)) };
+    const inScope = (file) => {
+      const f = String(file ?? "").replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!prefixes.some((p) => under(f, p))) return false;
+      return files === null || files.includes(f);
+    };
+    return { label: parts.join(" and "), files: files === null ? null : files, prefixes, matches: inScope };
   }
   const set = new Set(files);
   return { label: parts.join(" and "), files: set, prefixes: [], matches: (file) => set.has(String(file ?? "").replace(/\\/g, "/").replace(/^\.\//, "")) };
@@ -54,7 +70,8 @@ export function printScope(scope) {
 export function scopeFail(scope) {
   // A scope that selects nothing is not "everything is fine": it means the question was not
   // asked of anything.
-  return scope.files !== null && scope.files.size === 0;
+  if (scope.files === null) return false;
+  return (scope.files instanceof Set ? scope.files.size : scope.files.length) === 0;
 }
 
 export function assertScopeResolved(scope, human) {
