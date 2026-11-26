@@ -29,7 +29,7 @@ import {
   sha256,
 } from "../tools/lib/common.mjs";
 import { appendLedger, readLedger, verifyLedger } from "../tools/lib/ledger.mjs";
-import { GATE_IDS, STATUSES, PHASES, GATE_SUGGESTIONS, phase as getPhase, nextPhase } from "../tools/lib/gates.mjs";
+import { GATE_IDS, STATUSES, PHASES, GATE_SUGGESTIONS, EVIDENCE_GATES, HUMAN_GATES, phase as getPhase, nextPhase } from "../tools/lib/gates.mjs";
 import { familyOf } from "../tools/lib/families.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -44,9 +44,13 @@ const [command = "status", ...rest] = positional;
 // ---------------------------------------------------------------------------
 const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
+// The version lives in pipeline/VERSION and is read, not retyped: a literal here drifted from
+// the file and every document quoted whichever it happened to see (SECOND-OPINION-3 G-23).
+const PIPELINE_VERSION = fs.readFileSync(path.join(PIPELINE_DIR, "VERSION"), "utf8").trim();
+
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.7.0",
+  pipelineVersion: PIPELINE_VERSION,
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -258,18 +262,39 @@ function checkArtifacts(name) {
 // human has allowlisted its hash in a protected control file.
 const ALLOWLIST = "docs/00-control/allowed-commands.json";
 
+// The allowlist is a human artefact, so it is read from the base commit and never from the
+// working tree. It used to be read from the tree *with a flag that named a different file*,
+// which meant the same command line that supplied `--cmd` could also supply the approval
+// (SECOND-OPINION-3 G-02). Both routes are gone: no flag, no tree.
 function allowlist() {
-  const file = abs(flags["allow-commands"] ?? ALLOWLIST);
-  if (!fs.existsSync(file)) return {};
+  const base = readProgress().baseCommit;
+  const fromBase = base ? run(`git show ${base}:${ALLOWLIST}`, { cwd: projectRoot }) : { code: 1, stdout: "" };
+  let body = fromBase.code === 0 ? fromBase.stdout : null;
+  let warning = null;
+  if (body === null) {
+    // A human may allowlist a command after `init`. That is allowed, but it has to be a commit:
+    // the working tree is the builder's, and a path the caller names is not an approval.
+    const head = run(`git show HEAD:${ALLOWLIST}`, { cwd: projectRoot });
+    if (head.code !== 0) {
+      return {
+        entries: {},
+        error: base
+          ? `${ALLOWLIST} is not committed (missing from ${base} and from HEAD)`
+          : `no base commit is recorded and ${ALLOWLIST} is not committed`,
+      };
+    }
+    body = head.stdout;
+    warning = `${ALLOWLIST} is newer than the base commit ${base ?? "(none)"}; it is read from HEAD because it is committed`;
+  }
   try {
-    return readJson(file).sha256 ?? {};
+    return { entries: JSON.parse(body).sha256 ?? {}, error: null, warning };
   } catch {
-    return {};
+    return { entries: {}, error: `${ALLOWLIST} is not valid JSON` };
   }
 }
 
 function allowlisted(cmd) {
-  return Boolean(allowlist()[sha256(cmd)]);
+  return Boolean(allowlist().entries[sha256(cmd)]);
 }
 
 // The spec hash is only worth writing if something reads it. This is the reader.
@@ -328,6 +353,8 @@ function recordGate(gate, entry, extra = {}) {
   const progress = readProgress();
   const commandSource =
     entry.commandSource ?? (entry.command ? "builtin" : entry.evidence ? "evidence" : "manual");
+  const attestedBy =
+    entry.attestedBy ?? (HUMAN_GATES.includes(gate) && flags["attested-by"] ? String(flags["attested-by"]) : null);
   progress.gates[gate] = {
     status: entry.status,
     command: entry.command ?? null,
@@ -336,6 +363,7 @@ function recordGate(gate, entry, extra = {}) {
     exitCode: entry.exitCode ?? null,
     reason: entry.reason ?? null,
     humanCommand: entry.humanCommand ?? null,
+    attestedBy,
     at: new Date().toISOString(),
     commit: commitSha(),
     ...extra,
@@ -357,6 +385,7 @@ function recordGate(gate, entry, extra = {}) {
       evidence: entry.evidence ?? null,
       filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
       modelFamily: flags.model ?? null,
+      attestedBy,
     },
     { cwd: projectRoot },
   );
@@ -655,20 +684,30 @@ switch (command) {
     const gate = rest[0] ?? positional[1];
     if (!gate || !GATE_IDS.includes(gate)) fail(`specify a gate id from: ${GATE_IDS.join(" ")}`);
 
+    // The flag that moved the allowlist is gone. Ignoring it silently would be the same defect
+    // wearing a different hat (B-29), so naming it is a hard error.
+    if (flags["allow-commands"] !== undefined) {
+      fail(`--allow-commands was removed in 2.7.1: the allowlist is read from ${ALLOWLIST} at the base commit, and a path the caller names is not an approval (SECOND-OPINION-3 G-02)`);
+    }
+
     if (flags.cmd) {
       const cmd = String(flags.cmd);
       if (!allowlisted(cmd)) {
         const h = sha256(cmd);
+        const why = allowlist().error;
         const reason = `agent-supplied command is not evidence: "${cmd.slice(0, 80)}" would be recorded as a pass because the caller typed it`;
         recordGate(gate, { status: "NOT_VERIFIED", reason, humanCommand: cmd, commandSource: "refused-agent-command" });
         console.error(paint.red(`refusing to record ${gate} from an agent-supplied --cmd`));
         console.error(`  ${reason}`);
-        console.error(`  Either a human runs it, or a human allowlists the exact command in ${ALLOWLIST} (a protected path):`);
+        console.error(`  Either a human runs it, or a human commits the exact command to ${ALLOWLIST} before the run:`);
         console.error(`    "${h}": ${JSON.stringify(cmd.slice(0, 120))}`);
+        if (why) console.error(`  (the allowlist could not be read: ${why})`);
         console.log(`\n${gate} NOT_VERIFIED (recorded in ${cfg.ledger})`);
         process.exit(3);
       }
-      console.log(paint.dim(`--cmd matches a human allowlist entry (sha256 ${sha256(cmd).slice(0, 12)}…)`));
+      const al = allowlist();
+      if (al.warning) warn(al.warning);
+      console.log(paint.dim(`--cmd matches a committed allowlist entry in ${ALLOWLIST} (sha256 ${sha256(cmd).slice(0, 12)}…)`));
     }
 
     if (flags["not-verified"]) {
@@ -700,7 +739,36 @@ switch (command) {
 
     const evidence = flags.evidence ? String(flags.evidence).split(",").map((s) => s.trim()) : null;
 
+    // A human gate is closed by a named human, and by nothing else. This is a convention, not a
+    // boundary — the builder shares the shell — but it cannot be silent, and the name lands in
+    // the hash chain (SECOND-OPINION-3 G-22).
+    if (HUMAN_GATES.includes(gate)) {
+      const by = flags["attested-by"] ? String(flags["attested-by"]).trim() : "";
+      if (!by || process.env.PIPELINE_HUMAN !== "1") {
+        const reason = !by
+          ? `${gate} is a human gate: it is closed by --attested-by <name>, not by a file or a command the builder ran`
+          : `--attested-by ${by} needs PIPELINE_HUMAN=1 in the environment, so the name is a human's claim and not the builder's`;
+        recordGate(gate, {
+          status: "NOT_VERIFIED",
+          reason,
+          humanCommand: `PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs gate ${gate} --attested-by "<your name>"`,
+          commandSource: "human-gate-unattested",
+        });
+        console.error(paint.red(`${gate} is a human gate and no human attested to it`));
+        console.error(`  ${reason}`);
+        console.log(`\n${gate} NOT_VERIFIED (recorded in ${cfg.ledger})`);
+        process.exit(3);
+      }
+      console.log(paint.dim(`${gate} attested by ${by} (PIPELINE_HUMAN=1)`));
+    }
+
     if (cmds.length === 0 && evidence) {
+      if (!EVIDENCE_GATES.includes(gate)) {
+        const why = HUMAN_GATES.includes(gate)
+          ? `${gate} is a human gate: --evidence is refused, use --attested-by <name> with PIPELINE_HUMAN=1`
+          : `${gate} is a command gate: --evidence would record passed/exit 0 from a file the caller named, which is how nine gates were greened by 200 bytes of "a" (SECOND-OPINION-3 G-01)`;
+        fail(why);
+      }
       const missing = evidence.filter((f) => !substantialFile(abs(f)));
       if (missing.length) {
         recordGate(gate, { status: "failed", evidence, exitCode: 1 });
@@ -709,6 +777,18 @@ switch (command) {
       recordGate(gate, { status: "passed", evidence, exitCode: 0, commandSource: "evidence" });
       ok(`${gate} passed on evidence: ${evidence.join(", ")}`);
       console.log(paint.dim("note: an evidence gate is a judgement call. A fresh reviewer must still read it (07)."));
+      break;
+    }
+
+    // An attested human gate with no command to run is closed by the attestation itself.
+    if (cmds.length === 0 && HUMAN_GATES.includes(gate)) {
+      recordGate(gate, {
+        status: "passed",
+        exitCode: 0,
+        commandSource: "human-attestation",
+        attestedBy: String(flags["attested-by"]),
+      });
+      ok(`${gate} passed on a human attestation from ${flags["attested-by"]} (recorded in ${cfg.ledger})`);
       break;
     }
 
@@ -818,6 +898,10 @@ switch (command) {
       } else if (g.evidence) {
         passedNow = g.evidence.every((f) => substantialFile(abs(f)));
         detail = passedNow ? "evidence present" : "evidence missing";
+      } else if (g.attestedBy) {
+        console.log(`  ${id.padEnd(4)} ${paint.dim(`attested by ${g.attestedBy}; a human gate is not re-runnable`)}`);
+        skipped++;
+        continue;
       } else {
         console.log(`  ${id.padEnd(4)} ${paint.dim("recorded by explicit approval; cannot verify")}`);
         skipped++;

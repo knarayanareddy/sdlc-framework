@@ -82,3 +82,42 @@ test("more than three FULL rounds is rejected", () => {
   assert.equal(status, 1);
   assert.match(out.problems.join("\n"), /exceeds 3/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.7.1 — a pass has to come from somewhere a builder cannot type it into
+// ---------------------------------------------------------------------------
+test("an evidence pass outside the evidence gate is rejected", () => {
+  // 2.7.0: `gate G11 --evidence <any 100-byte file>` recorded passed/exit 0 and
+  // validate-progress accepted it (SECOND-OPINION-3 G-01).
+  const { status, out } = check({
+    ...base,
+    gates: { ...base.gates, G10: { status: "passed", exitCode: 0, evidence: ["README.md"], commandSource: "evidence" } },
+  });
+  assert.equal(status, 1);
+  assert.match(out.problems.join("\n"), /G10: passed on --evidence/);
+});
+
+test("G3 may still be closed by a document", () => {
+  const { status, out } = check({
+    ...base,
+    gates: { ...base.gates, G3: { status: "passed", exitCode: 0, evidence: ["docs/03-design/design-brief.md"], commandSource: "evidence" } },
+  });
+  assert.equal(status, 0, out.problems.join("\n"));
+});
+
+test("a human gate passed without an attestation is rejected", () => {
+  const { status, out } = check({
+    ...base,
+    gates: { ...base.gates, G11: { status: "passed", exitCode: 0, command: "true" } },
+  });
+  assert.equal(status, 1);
+  assert.match(out.problems.join("\n"), /G11: is a human gate and was passed without attestedBy/);
+});
+
+test("a human gate passed with an attestation is accepted", () => {
+  const { status, out } = check({
+    ...base,
+    gates: { ...base.gates, G11: { status: "passed", exitCode: 0, attestedBy: "Ravi", commandSource: "human-attestation" } },
+  });
+  assert.equal(status, 0, out.problems.join("\n"));
+});

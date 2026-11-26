@@ -2,7 +2,7 @@
 
 Input: release-candidate commit, `docs/RUNBOOK.md`, `docs/FINAL-REPORT.md`
 Output: `docs/11-deploy/{deploy-log.md, smoke-results.md, rollback-drill.md, alerts-test.md}`
-Gate: **G11**. Where there is no staging target, every item is `NOT_VERIFIED` with the exact human command.
+Gate: **G11**. A human gate: it is closed by `--attested-by <name>` with `PIPELINE_HUMAN=1`, never by a file or by a command the builder ran. Where there is no staging target, every item is `NOT_VERIFIED` with the exact human command.
 
 ```bash
 node pipeline/bin/pipeline.mjs phase start 11
@@ -10,6 +10,8 @@ node pipeline/bin/pipeline.mjs phase start 11
 node pipeline/bin/pipeline.mjs gate G11 --not-verified \
   --reason "no staging target is available in this environment" \
   --human-command "curl -sI https://staging.example/.well-known/build-id"
+# with a human who checked it, the attestation is the record:
+# PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs gate G11 --attested-by "<your name>"
 node pipeline/bin/pipeline.mjs phase done 11
 ```
 

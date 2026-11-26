@@ -22,7 +22,8 @@ const sha256 = (s) => crypto.createHash("sha256").update(String(s), "utf8").dige
 
 const git = (cwd, ...args) =>
   spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
-const cli = (cwd, args) => spawnSync("node", [CLI, ...args, "--cwd", cwd], { cwd, encoding: "utf8" });
+const cli = (cwd, args, env = {}) =>
+  spawnSync("node", [CLI, ...args, "--cwd", cwd], { cwd, encoding: "utf8", env: { ...process.env, ...env } });
 const tool = (cwd, file, args) => spawnSync("node", [path.join(HERE, file), ...args], { cwd, encoding: "utf8" });
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const progressOf = (dir) => readJson(path.join(dir, "docs", "progress.json"));
@@ -78,11 +79,15 @@ test("gate --cmd is refused unless a human allowlisted the exact command", () =>
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("the same command passes once a human allowlists its hash", () => {
+test("the same command passes once a human commits its hash to the allowlist", () => {
   const dir = project("cmd-allow");
   const cmd = "node -e \"process.exit(0)\"";
   const file = path.join(dir, "docs", "00-control", "allowed-commands.json");
   fs.writeFileSync(file, JSON.stringify({ note: "test", sha256: { [sha256(cmd)]: cmd } }, null, 2));
+  // The allowlist is a human artefact, so it has to be committed before it counts. Writing it
+  // into the builder's working tree and pointing a flag at it was the 2.7.0 bypass (G-02).
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "human allowlists one command");
 
   const res = cli(dir, ["gate", "G7", "--cmd", cmd]);
   assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
@@ -92,6 +97,71 @@ test("the same command passes once a human allowlists its hash", () => {
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.7.1 — the two ways to certify a gate by typing (SECOND-OPINION-3 G-01, G-02, G-22)
+// ---------------------------------------------------------------------------
+test("--evidence cannot pass a command gate", () => {
+  const dir = project("evidence-gate");
+  // 9/9 gates, including G11, went green on 200 bytes of "a" at 2.7.0. Only G3 is a document.
+  for (const g of ["G4", "G5", "G7", "G8", "G9", "G10", "G12"]) {
+    const res = cli(dir, ["gate", g, "--evidence", "README.md"]);
+    assert.notEqual(res.status, 0, `${g} accepted --evidence:\n${res.stdout}${res.stderr}`);
+    assert.equal(progressOf(dir).gates[g], undefined, `${g} was recorded anyway`);
+  }
+  // G11 hits the human gate first: it records NOT_VERIFIED with a reason, never a pass.
+  const human = cli(dir, ["gate", "G11", "--evidence", "README.md"]);
+  assert.notEqual(human.status, 0);
+  assert.equal(progressOf(dir).gates.G11.status, "NOT_VERIFIED");
+  // G3 is the evidence gate, and it still works.
+  assert.equal(cli(dir, ["gate", "G3", "--evidence", "README.md"]).status, 0);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a flag that moves the allowlist is refused, not ignored", () => {
+  const dir = project("cmd-allow-flag");
+  const cmd = "true";
+  const file = path.join(dir, "al.json");
+  fs.writeFileSync(file, JSON.stringify({ sha256: { [sha256(cmd)]: cmd } }, null, 2));
+
+  const res = cli(dir, ["gate", "G7", "--cmd", cmd, "--allow-commands", file]);
+  assert.notEqual(res.status, 0, `--allow-commands was honoured:\n${res.stdout}${res.stderr}`);
+  assert.match(res.stderr, /--allow-commands was removed/);
+  assert.notEqual(progressOf(dir).gates.G7?.status, "passed");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("an uncommitted allowlist is not an allowlist", () => {
+  const dir = project("cmd-allow-tree");
+  const cmd = "node -e \"process.exit(0)\"";
+  const file = path.join(dir, "docs", "00-control", "allowed-commands.json");
+  fs.writeFileSync(file, JSON.stringify({ sha256: { [sha256(cmd)]: cmd } }, null, 2));
+
+  const res = cli(dir, ["gate", "G7", "--cmd", cmd]);
+  assert.equal(res.status, 3, `expected exit 3, got ${res.status}\n${res.stdout}${res.stderr}`);
+  assert.match(res.stderr, /not committed/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("G11 is closed by a named human, not by a file", () => {
+  const dir = project("human-gate");
+
+  const evidence = cli(dir, ["gate", "G11", "--evidence", "README.md"]);
+  assert.notEqual(evidence.status, 0);
+  assert.notEqual(progressOf(dir).gates.G11?.status, "passed");
+
+  // A name without the human in the shell is the builder signing for itself.
+  const named = cli(dir, ["gate", "G11", "--attested-by", "Ravi"]);
+  assert.equal(named.status, 3, `expected exit 3, got ${named.status}\n${named.stdout}${named.stderr}`);
+  assert.equal(progressOf(dir).gates.G11.status, "NOT_VERIFIED");
+  assert.match(progressOf(dir).gates.G11.reason, /PIPELINE_HUMAN=1/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 
 // ---------------------------------------------------------------------------
 // 2 · The phase table cannot be walked out of order (review #2 · F-03)
@@ -157,8 +227,10 @@ test("editing the spec after freeze makes verify fail", () => {
 // ---------------------------------------------------------------------------
 test("deleting the last ledger lines is caught against progress.json", () => {
   const dir = project("ledger");
+  // G3 is the only evidence gate at 2.7.1; G4 is a command gate and refuses --evidence
+  // (SECOND-OPINION-3 G-01), so the second gate is a real one: the ledger checking itself.
   assert.equal(cli(dir, ["gate", "G3", "--evidence", "README.md"]).status, 0);
-  assert.equal(cli(dir, ["gate", "G4", "--evidence", "README.md"]).status, 0);
+  assert.equal(cli(dir, ["gate", "G0", "--builtin", "ledger"]).status, 0);
 
   const ledger = path.join(dir, "docs", "gate-ledger.jsonl");
   const lines = fs.readFileSync(ledger, "utf8").trim().split("\n");
@@ -364,5 +436,21 @@ test("pipeline live reports the four P6 items and its exit code follows the wors
   const allReady = report.items.every((i) => i.state === "ready");
   assert.equal(res.status, allReady ? 0 : 3, `exit ${res.status} with ${report.items.map((i) => `${i.id}=${i.state}`).join(" ")}`);
   assert.match(res.stdout, allReady ? /RESULT: PASS/ : /RESULT: NOT_VERIFIED/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a human can close G11, and the attestation lands in the hash chain", () => {
+  const dir = project("human-gate-attested");
+  const res = cli(dir, ["gate", "G11", "--attested-by", "Ravi"], { PIPELINE_HUMAN: "1" });
+  assert.equal(res.status, 0, `expected exit 0, got ${res.status}\n${res.stdout}${res.stderr}`);
+
+  const gate = progressOf(dir).gates.G11;
+  assert.equal(gate.status, "passed");
+  assert.equal(gate.commandSource, "human-attestation");
+  assert.equal(gate.attestedBy, "Ravi");
+
+  const ledger = fs.readFileSync(path.join(dir, "docs", "gate-ledger.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(ledger.at(-1).attestedBy, "Ravi", "the attestation must be in the entry, so it is covered by the hash");
+
   fs.rmSync(dir, { recursive: true, force: true });
 });
