@@ -39,6 +39,7 @@ ROLE: security engineer who fixes root causes. You must not weaken any test, and
 
 - [ ] 0 `confirmed` findings after the latest **FULL** round; every fixed one has a fail-before / pass-after test in `tests/security/`
 - [ ] `validate-findings.mjs` passes, and the findings file records the round as FULL
+- [ ] `node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl` is PASS, or the report says the patch review was single-family
 - [ ] Full suite, typecheck, build green; mutation score on the touched security modules ≥ threshold
 - [ ] Each variant search documented with the query used and its results
 - [ ] The post-patch validator returned no reproducible bypass, or its gaps are listed

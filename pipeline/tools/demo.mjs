@@ -88,14 +88,14 @@ step("phase 06", ["phase", "start", "06"]);
 step("", ["phase", "done", "06"]);
 
 step("phase 07", ["phase", "start", "07"]);
-step("", ["gate", "G7", "--builtin", "unit"]);
+step("", ["gate", "G7", "--builtin", "unit", "--model", "gpt-5"]);
 step("", ["phase", "done", "07"]);
 
 step("phase 08", ["phase", "start", "08"]);
 step("", ["phase", "done", "08"]);
 
 step("phase 09", ["phase", "start", "09"]);
-step("", ["gate", "G9", "--builtin", "findings,coverage"]);
+step("", ["gate", "G9", "--builtin", "findings,coverage", "--model", "gemini-2.5-pro"]);
 step("", ["phase", "done", "09"]);
 
 step("phase 10", ["phase", "start", "10"]);
@@ -113,6 +113,26 @@ step("", ["phase", "done", "12"]);
 
 step("final state", ["status"]);
 step("re-run every gate (never trust the record)", ["verify"]);
+
+// The final report is generated from the ledger, so it is the last place a false claim could
+// appear. Check that it still says the uncomfortable things.
+const reportPath = path.join(work, "docs", "FINAL-REPORT.md");
+const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, "utf8") : "";
+const required = [
+  ["## Not verified", "the NOT_VERIFIED section"],
+  ["calibration:", "the calibration status"],
+  ["verifier independence:", "the independence status"],
+  ["What this report must not say", "the honesty footer"],
+];
+const missing = required.filter(([needle]) => !report.includes(needle));
+if (missing.length) {
+  failures++;
+  console.log(`\n${paint.red(`FINAL-REPORT.md is missing: ${missing.map(([, label]) => label).join(", ")}`)}`);
+}
+const section = report.split("## Red team")[1]?.split("##")[0] ?? "";
+if (section) {
+  for (const line of section.trim().split("\n").filter((l) => l.startsWith("- "))) console.log(`  ${paint.dim(line)}`);
+}
 
 console.log(paint.dim(`\nfinal report: ${path.join(work, "docs", "FINAL-REPORT.md")}`));
 finish();

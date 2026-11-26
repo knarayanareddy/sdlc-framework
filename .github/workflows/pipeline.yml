@@ -31,6 +31,22 @@ jobs:
             pipeline/examples/mini-app/docs/02-spec/SPEC.md \
             pipeline/examples/mini-app/tests --allow-uncovered
 
+      - name: report what this runner can and cannot enforce
+        run: |
+          node pipeline/tools/sandbox.mjs check
+          node pipeline/tools/dast.mjs plan
+          node pipeline/tools/verifier-route.mjs status
+          node pipeline/tools/calibrate.mjs status --dir /tmp/no-calibration || true
+
+      - name: the fuzzer finds a trusting server and passes a strict one
+        run: node --test pipeline/tools/fuzz-api.test.mjs
+
+      - name: campaign — a sandboxed run of the example's own tests
+        run: |
+          node pipeline/tools/sandbox.mjs run --copy pipeline/examples/mini-app \
+            --cmd "node --test" --timeout 120000 --max-output 20000 \
+            --out /tmp/sandbox-record.json
+
       - name: entry-point enumerator is deterministic
         run: |
           cd pipeline/examples/mini-app

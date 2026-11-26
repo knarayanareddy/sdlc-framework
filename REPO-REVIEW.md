@@ -273,8 +273,18 @@ F-13 (no root `package.json`) are product decisions, not pipeline-layer work. F-
 item — the baseline `sha` — is untouched; the v2 baseline is a different file with a different
 job (`--check-baseline`), and it does record a content hash.
 
-**Still true of v2 after this work:** it is a pipeline, not a product-grade tool. The
-cross-model verifier routing, the sandbox profile, DAST/fuzz runners and planted-bug
-calibration are specified in the prompts and reported as `NOT_VERIFIED` by the tools. Nothing
-in this repository claims otherwise — the demo's final report is generated from recorded exit
-codes, and its "what this report must not say" footer exists exactly to stop that drift.
+**The four layers that were "specified, not built" are now built and tested** (see
+`pipeline/INTEGRATIONS.md`): cross-model verifier routing (`verifier-route.mjs`,
+`independence.mjs`), the sandbox (`sandbox.mjs`: real env scrubbing, isolation, timeouts, a
+hardened compose profile with a control validator), DAST/fuzzing (`fuzz-api.mjs`, a real
+schema-driven fuzzer tested against a trusting and a strict server, plus `dast.mjs` adapters and
+a normaliser tested on real scanner fixtures), and planted-bug calibration (`calibrate.mjs`,
+recall per class with the refusals that make the number meaningful).
+
+**Still true of v2 after this work:** it is a pipeline, not a product-grade tool, and four
+things can only be finished on your machine — a model credential for the transport (request
+shape tested with `--dry-run`), a container runtime for the sandbox profile, the scanner
+binaries themselves, and a finished product to calibrate against. Every one of those is
+`NOT_VERIFIED` until you do it, and the final report says so, because it is generated from
+recorded exit codes. That is the point: the gap is now visible and small, instead of being a
+paragraph in a prompt.

@@ -29,15 +29,33 @@ Do not compute scores you cannot justify from the data.
 
 ## Part 2 · Planted-bug calibration (once per pipeline version, throwaway branch, never merged)
 
-1. Pick a finished product. Branch `calibration/<pipeline-version>`.
-2. A **separate agent** that will not take part in the red team plants **8 to 12 vulnerabilities** in code that actually exists, covering classes the app has: IDOR on a `:id` route, mass assignment via spread into `update`, open redirect via `next=`, stored XSS with `dangerouslySetInnerHTML`, missing login rate limit, race on a unique constraint, SSRF in a fetch, a secret in `NEXT_PUBLIC_*`, a verbose error body, CSRF on a cookie-authed mutation, unbounded pagination.
-3. The planter writes `planted.json` (class, file, line, description) and **hides it** from the red team.
-4. Run `08` in full, unchanged, blind.
-5. Recall = planted found ÷ planted, overall and per class. Also classify confirmed findings that were not planted (real bugs vs false positives).
-6. Thresholds: overall recall ≥0.7 and no applicable class at 0. Below that, every future report from this pipeline version must say **"red team inconclusive"**, and the `08` prompts are revised before reuse.
-7. Write the caveat: planted bugs are usually easier than natural ones, so recall is an upper bound.
+The tool does the bookkeeping and the arithmetic; you supply a second agent and a blind run.
 
-`calibration-report.md` records the sample size next to every number. Never report a recall figure without it.
+```bash
+node pipeline/tools/calibrate.mjs classes                                   # the 14-class catalogue
+node pipeline/tools/calibrate.mjs plan --n 10 --seed <n> --out calibration/planted.plan.json
+node pipeline/tools/calibrate.mjs template --plan calibration/planted.plan.json --out calibration/planted.answer.json
+#   → a separate agent, not on the red team, plants them and fills in the answer file
+node pipeline/tools/calibrate.mjs score --plan calibration/planted.plan.json \
+  --answer calibration/planted.answer.json --findings docs/08-redteam/run-1/findings.json
+node pipeline/tools/calibrate.mjs status --dir calibration
+```
+
+1. Branch `calibration/<pipeline-version>`; never merge it.
+2. Choose only classes the app can actually have (`--classes idor,ssrf,…`). Planting a CSRF bug
+   in a token-authenticated API and calling a miss a detection failure is cheating yourself.
+3. The planter proves each bug is reachable from an existing entry point. `init` already put the
+   answer file in `.gitignore`; if it is tracked, `score` refuses.
+4. Run `08` in full, unchanged, blind. The answer file is not in its context.
+5. `score` matches class (with aliases) + file + line ±25 against **confirmed** findings only,
+   and refuses a DIFF round.
+6. Thresholds: recall ≥0.7 **and** no planted class at 0. Below that the verdict is
+   `INCONCLUSIVE` and every report from this version must say **"red team inconclusive"**.
+7. Read the `unplanted` list too: recall is not precision.
+8. Write the caveat: planted bugs are easier than natural ones, so recall is an upper bound.
+
+`calibration-report.md` prints the sample size next to every number, and `pipeline report` reads
+`calibration/calibration.json` so the final report cannot omit it.
 
 ## Part 3 · Retro and prompt changes
 

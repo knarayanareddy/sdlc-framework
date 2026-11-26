@@ -29,6 +29,7 @@ import {
 } from "../tools/lib/common.mjs";
 import { appendLedger, readLedger, verifyLedger } from "../tools/lib/ledger.mjs";
 import { GATE_IDS, STATUSES, PHASES, GATE_SUGGESTIONS, phase as getPhase, nextPhase } from "../tools/lib/gates.mjs";
+import { familyOf } from "../tools/lib/families.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE_DIR = path.resolve(HERE, "..");
@@ -44,7 +45,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.0.0",
+  pipelineVersion: "2.1.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -62,6 +63,11 @@ const DEFAULTS = {
   findings: "docs/08-redteam/run-1/findings.json",
   finalReport: "docs/FINAL-REPORT.md",
   evalDir: "docs/12-eval",
+  apiContract: "api-contract.json",
+  fuzzBase: "http://127.0.0.1:3000",
+  sandboxProfile: "docker-compose.sandbox.yml",
+  calibrationDir: "calibration",
+  independence: { builderFamily: "unknown", requireFor: ["G7", "G9", "G12"] },
   blockers: "docs/blockers.md",
   commands: {
     types: "npx tsc --noEmit",
@@ -172,6 +178,16 @@ function builtin(name) {
       return `node ${tool("expect-files.mjs")} ${c.finalReport} README.md .env.example`;
     case "slices":
       return `node ${tool("expect-files.mjs")} --glob "docs/06-build/slice-*.md"`;
+    case "independence":
+      return `node ${tool("independence.mjs")} --ledger ${c.ledger} --config ${c.configPath}`;
+    case "fuzz": {
+      const floor = `${path.posix.dirname(String(c.entrypoints).replace(/\\/g, "/"))}/floor`;
+      return `node ${tool("fuzz-api.mjs")} --contract ${c.apiContract} --base ${c.fuzzBase} --out ${floor}/fuzz.json`;
+    }
+    case "sandbox":
+      return `node ${tool("sandbox.mjs")} verify --file ${c.sandboxProfile}`;
+    case "calibrate":
+      return `node ${tool("calibrate.mjs")} status --dir ${c.calibrationDir}`;
     default:
       fail(`unknown builtin "${name}". Known: ${BUILTINS.join(", ")}`);
   }
@@ -182,6 +198,7 @@ const BUILTINS = [
   "trace:structure", "trace:freeze", "trace:check", "quotes", "entrypoints", "coverage", "findings",
   "progress", "ledger", "protected", "tripwire", "selftests",
   "digest", "metrics", "release", "slices", "manual",
+  "independence", "fuzz", "sandbox", "calibrate",
 ];
 
 // Artifact checks used by `phase done` where no single command can judge the work.
@@ -286,6 +303,7 @@ switch (command) {
       "docs/00-intake", "docs/00-control", "docs/01-research/extracts", "docs/01-research/snapshots",
       "docs/02-spec", "docs/03-design", "docs/04-architecture", "docs/05-test", "docs/06-build",
       "docs/07-qa", "docs/08-redteam/run-1", "docs/09-patch", "docs/11-deploy", "docs/12-eval",
+      cfg.calibrationDir,
     ];
     if (fs.existsSync(abs(cfg.progress)) && !flags.force) {
       fail(`${cfg.progress} already exists. Use --force to re-initialise (this does not delete artifacts).`);
@@ -317,6 +335,16 @@ switch (command) {
         "",
       ].join("\n"),
     );
+
+    // The calibration answer file must never be committed: a plant the red team can read is
+    // not a blind test. Add the ignore rule now, before anyone plants anything.
+    const ignoreFile = abs(".gitignore");
+    const ignoreLine = `${cfg.calibrationDir}/planted.answer.json`;
+    const existingIgnore = fs.existsSync(ignoreFile) ? fs.readFileSync(ignoreFile, "utf8") : "";
+    if (!existingIgnore.split("\n").some((l) => l.trim() === ignoreLine || l.trim() === `${cfg.calibrationDir}/`)) {
+      fs.appendFileSync(ignoreFile, `${existingIgnore && !existingIgnore.endsWith("\n") ? "\n" : ""}\n# planted-bug calibration answers: never commit these\n${ignoreLine}\n`);
+      console.log(`added ${ignoreLine} to .gitignore`);
+    }
 
     ok(`initialised ${cfg.progress}, ${cfg.ledger} (genesis) and ${cfg.configPath}`);
     console.log(`next: node pipeline/bin/pipeline.mjs phase start 00`);
@@ -436,6 +464,25 @@ switch (command) {
     if (res.stderr) console.error(tail(res.stderr, 20));
 
     const passed = res.code === 0;
+    // Exit 3 is the pipeline's NOT_VERIFIED protocol: the tool could not evaluate the work and
+    // printed the command a human must run. It is recorded as such, never as a failure or a pass.
+    if (!passed && res.code === 3) {
+      const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+      const reason = (
+        out.match(/NOT_VERIFIED:\s*(.+)/)?.[1] ??
+        out.match(/RESULT: NOT_VERIFIED\s*—?\s*(.+)/)?.[1] ??
+        "the tool reported NOT_VERIFIED"
+      )
+        .trim()
+        .slice(0, 300);
+      const humanCommand = (out.match(/human command:\s*(.+)/)?.[1] ?? "").trim().slice(0, 300) || null;
+      recordGate(gate, { status: "NOT_VERIFIED", command: joined, exitCode: 3, reason, humanCommand, evidence });
+      console.log("");
+      console.log(paint.yellow(`${gate} NOT_VERIFIED (exit 3, recorded in ${cfg.ledger})`));
+      console.log(`  reason: ${reason}`);
+      if (humanCommand) console.log(`  human command: ${humanCommand}`);
+      process.exit(3);
+    }
     recordGate(gate, { status: passed ? "passed" : "failed", command: joined, exitCode: res.code, evidence });
 
     console.log("");
@@ -639,6 +686,38 @@ switch (command) {
     const estimateFile = abs(path.join(cfg.evalDir, "estimate.json"));
     const estimate = fs.existsSync(estimateFile) ? readJson(estimateFile) : null;
 
+    // Calibration and independence are the two claims a reader is most likely to over-read.
+    const calibFile = path.join(cfg.calibrationDir, "calibration.json");
+    const calib = fs.existsSync(abs(calibFile)) ? readJson(abs(calibFile)) : null;
+    const calibrationLine = !calib
+      ? `**not run** for ${cfg.pipelineVersion} — a zero-finding round is not evidence of a clean codebase (\`node pipeline/tools/calibrate.mjs plan --n 10 --seed <n>\`)`
+      : calib.pipelineVersion !== cfg.pipelineVersion
+        ? `**stale** — measured on ${calib.pipelineVersion}, this run is ${cfg.pipelineVersion}. Re-calibrate before trusting any recall claim.`
+        : calib.calibrated
+          ? `calibrated for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} planted bugs (small sample; an upper bound)`
+          : `**inconclusive** for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} bugs${calib.zeroRecallClasses?.length ? `, no detection for ${calib.zeroRecallClasses.join(", ")}` : ""}`;
+
+    const required = cfg.independence?.requireFor ?? ["G7", "G9", "G12"];
+    const builderFamily = cfg.independence?.builderFamily ?? "unknown";
+    const last = new Map(entries.map((e) => [e.gate, e]));
+    const judged = required.filter((g) => last.has(g) && last.get(g).status !== "NOT_VERIFIED");
+    const noModel = judged.filter((g) => !last.get(g).modelFamily);
+    const sameFamily = judged.filter((g) => {
+      const e = last.get(g);
+      if (!e?.modelFamily) return false;
+      const f = familyOf(e.modelFamily);
+      return builderFamily !== "unknown" && f === builderFamily;
+    });
+    const independenceLine = sameFamily.length
+      ? `**FAIL** — ${sameFamily.join(", ")} were verified inside the builder's own family (${builderFamily})`
+      : noModel.length
+        ? `**NOT_VERIFIED** — ${noModel.join(", ")} recorded no verifier model, so independence is unproven`
+        : builderFamily === "unknown"
+          ? "unproven — set independence.builderFamily so the pipeline can judge it"
+          : judged.length
+            ? `every judged gate (${judged.join(", ")}) was verified by a model outside ${builderFamily}`
+            : "no gate was judged: nothing recorded a verifier model";
+
     const body = [
       "# Final report",
       "",
@@ -675,7 +754,8 @@ switch (command) {
       estimate
         ? `- capture–recapture: ${estimate.ok ? `estimated total ${Number(estimate.total).toFixed(2)}, expected remaining ${Number(estimate.remaining).toFixed(2)}` : `no estimate (${estimate.reason})`}`
         : "- capture–recapture: not recorded (`pipeline estimate --a … --b … --m … --write`)",
-      "- calibration: see docs/12-eval/calibration-report.md. Without it, a zero-finding round is **not** evidence of a clean codebase.",
+      `- calibration: ${calibrationLine}`,
+      `- verifier independence: ${independenceLine}`, 
       "",
       "## Blockers",
       "",

@@ -79,6 +79,31 @@ node pipeline/bin/pipeline.mjs gate G11 --not-verified \
 `validate-progress.mjs` rejects a `NOT_VERIFIED` gate that has no reason or no human
 command. That is deliberate: "unverified" must still be actionable.
 
+## 3.5 · The four integrations
+
+```bash
+node pipeline/tools/verifier-route.mjs status      # is a cross-family verifier available?
+node pipeline/tools/sandbox.mjs check              # what can this host enforce?
+node pipeline/tools/dast.mjs plan                  # which scanners are installed?
+node pipeline/tools/calibrate.mjs status --dir calibration
+```
+
+Each one answers honestly, and each answer is either a working command or the exact thing to
+install. The step-by-step last mile — endpoint, container, scanner, plant — is in
+**[INTEGRATIONS.md](./INTEGRATIONS.md)**.
+
+Gates that use them:
+
+| Gate | Command |
+|---|---|
+| G0 | `gate G0 --builtin ledger,selftests,sandbox` |
+| G7 | `gate G7 --builtin types,lint,unit,build,fuzz` |
+| G9 | `gate G9 --builtin findings,coverage,independence` |
+| G12 | `gate G12 --builtin metrics,calibrate` |
+
+An exit code of **3** from any tool means "I could not evaluate this": the orchestrator records
+`NOT_VERIFIED` with the reason and the printed human command, never a pass.
+
 ## 4 · When a defect will not die
 
 Three repair attempts, then a blocker with a fallback:

@@ -37,11 +37,19 @@ node pipeline/bin/pipeline.mjs report
 | `tools/estimate.mjs` | R-03, R-10 | Chapman capture–recapture; refuses to guess from zero overlap |
 | `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED`, never green |
 | `tools/validate-progress.mjs` | R-15 | schema + invariants: `passed` needs exit 0, `NOT_VERIFIED` needs a reason and a human command |
+| `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family**, seals the envelope with a hash, and refuses a verdict that skips a claim or cites no evidence |
+| `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded) |
+| `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, isolated workdir, timeout and output cap; reports which controls it could not enforce; `profile`/`verify` ship and check a hardened compose file |
+| `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings |
+| `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei and fuzz output into one lead shape |
+| `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, recall per class, calibrated/inconclusive verdict that `report` has to print |
 | `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
 
-Still **specified, not built** (say so in the report): cross-model verifier routing, the
-sandbox profile itself, planted-bug calibration, and the DAST/fuzz runners. `tripwire`
-reports each of those as `NOT_VERIFIED` with the command a human must run.
+Four layers used to be "specified, not built". They are built and tested now; what remains is
+the part that needs a credential, a container runtime or a scanner binary, and
+**[`INTEGRATIONS.md`](./INTEGRATIONS.md)** lists exactly what to do for each — with the command
+that proves it worked. Anything still unenforceable on your host is reported as `NOT_VERIFIED`
+with the command a human must run, never silently skipped.
 
 Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**.
 

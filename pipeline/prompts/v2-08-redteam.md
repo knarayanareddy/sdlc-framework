@@ -20,13 +20,29 @@ Audit this repository in **full audit mode**, standard profile (`deep` if it han
 
 ## 8.1 Deterministic floor (scripts, not models)
 
-Run and store raw output under `run-N/floor/`: SAST (Semgrep/CodeQL), dependencies (osv-scanner, `supply-chain-risk-auditor`), secrets (gitleaks on the tree **and** history), DAST baseline against the sandboxed production build, API fuzzing against the spec contract, and the entry-point enumerator.
+Store raw output under `run-N/floor/`. Every command below is real; anything that cannot run is
+`NOT_VERIFIED` in `dast.json` and in the report.
 
 ```bash
 node pipeline/tools/entrypoints.mjs --root . --out docs/08-redteam/run-N/entrypoints.json
+
+# SAST + dependencies + secrets → leads, in one normaliser
+node pipeline/tools/dast.mjs leads --from semgrep.json --out docs/08-redteam/run-N/floor/scanner-leads.json
+node pipeline/tools/dast.mjs leads --from osv.json  --format sarif --out docs/08-redteam/run-N/floor/scanner-leads.json
+
+# dynamic: built-in schema fuzzer + whatever scanners exist, against the sandboxed build
+node pipeline/tools/fuzz-api.mjs --contract api-contract.json --base http://127.0.0.1:3000 \
+  --out docs/08-redteam/run-N/floor/fuzz.json --leads docs/08-redteam/run-N/floor/scanner-leads.json
+node pipeline/tools/dast.mjs run --target http://127.0.0.1:3000 --contract api-contract.json \
+  --out docs/08-redteam/run-N/floor
 ```
 
-Scanner results become `scanner-leads.json` (`{tool, rule, file, line, text}`). **Leads are not findings.** A hunter must confirm, refute or defer each lead.
+`dast.mjs run` records, per tool, whether it ran, its exit code and its lead count. If nothing
+ran it prints `RESULT: NOT_VERIFIED` — that sentence belongs in the report.
+
+Scanner results and fuzzer violations both land in `scanner-leads.json`
+(`{tool, rule, file, line, text, severity}`). **Leads are not findings.** A hunter must
+confirm, refute or defer each lead, and say which.
 
 ## 8.2 Coverage-led hunting
 
@@ -119,6 +135,8 @@ State in the report that the estimate assumes independent hunts and equally find
 - [ ] Every scanner lead confirmed, refuted or deferred with a reason
 - [ ] Every confirmed finding has a tier and, for T1, a failing test committed and tagged `@finding`
 - [ ] `validate-findings.mjs` and `coverage-gate.mjs` pass
+- [ ] `run-N/floor/dast.json` exists and either names the tools that ran or says `NOT_VERIFIED`
+- [ ] Every scanner lead has a verdict: confirmed, refuted or deferred with a reason
 - [ ] The report says which rounds were FULL and which were DIFF, and names the verifier family or states `NOT_VERIFIED`
 
 NEVER: report a DIFF round as proof the codebase is clean. Never turn a scanner lead into a finding without a trace.
