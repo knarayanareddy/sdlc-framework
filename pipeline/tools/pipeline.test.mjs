@@ -349,3 +349,18 @@ test("phase 08 records the round the findings file says was run", () => {
   assert.equal(after.roundLog[0].mode, "FULL");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// P6 · `pipeline live` reports the environment, and does not invent a gate
+// ---------------------------------------------------------------------------
+test("pipeline live exits 3 on a host with no live environment, and writes the readiness file", () => {
+  const dir = project("p6-live");
+  const res = cli(dir, ["live"]);
+  assert.equal(res.status, 3, `expected NOT_VERIFIED on a bare host:\n${res.stdout}${res.stderr}`);
+  assert.match(res.stdout, /P6 · live environment/);
+  assert.match(res.stdout, /RESULT: NOT_VERIFIED/);
+  const report = readJson(path.join(dir, "docs", "13-live", "live-readiness.json"));
+  assert.equal(report.items.length, 4);
+  assert.ok(report.items.every((i) => i.state !== "ready"));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

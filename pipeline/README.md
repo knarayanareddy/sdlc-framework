@@ -13,7 +13,7 @@ v1 was prose plus one regex tool. **v2 ships the missing mechanisms as programs*
 its own test. Nothing below needs a model until a prompt tells you to dispatch one.
 
 ```bash
-node pipeline/tools/run-selftests.mjs      # 22 test files + 1 selftest script: no tool is trusted before its own test
+node pipeline/tools/run-selftests.mjs      # 23 test files + 1 selftest script: no tool is trusted before its own test
 node pipeline/tools/gate-ledger.mjs demo   # the G0 tamper test
 node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
 
@@ -45,6 +45,7 @@ node pipeline/bin/pipeline.mjs report
 | `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, matching **without replacement**, `file:line[:col]` and `line-range` locations, whole-path comparison, and a pass mark derived from the sample (below 5 planted bugs nothing can be calibrated); `report` has to print the verdict |
 | `tools/plan-check.mjs` | R-04 | the plan must agree with itself **before** a line is written: every `SEC-*` id has a threat-model entry, every enumerated route/action appears in the authorization matrix, and every `REQ-*`/`SEC-*`/`NFR-*` is delivered by some slice — with no slice that names no id. Slices are `NOT_REQUIRED` until the build produces them |
 | `tools/metrics-compute.mjs` | — | `docs/12-eval/metrics.json` is **computed** from the ledger, progress, spec and findings, and names each source with its sha256; a hand-written file must say `computed: false`. No ledger ⇒ exit 3, because metrics without evidence are a story |
+| `tools/live-check.mjs` | R6 | the four things a repository cannot finish alone (cross-family verifier, container runtime, `nuclei` + `schemathesis`, blind calibration) as one checklist: `probe` says where you stand, `prep` does every safe preparation step, `verify --run` exercises the binaries. It adds **no gate** — each item names the gate that already consumes its evidence, and a binary on `PATH` or a config key is never enough |
 | `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
 
 Every gate tool above also accepts `--scope <path>` (or `--changed-since <ref>`) and then says
@@ -58,7 +59,8 @@ the part that needs a credential, a container runtime or a scanner binary, and
 that proves it worked. Anything still unenforceable on your host is reported as `NOT_VERIFIED`
 with the command a human must run, never silently skipped.
 
-Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**.
+Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**. What is left for a human, and
+how to finish it in four steps: **[`P6-LIVE.md`](./P6-LIVE.md)**.
 
 ---
 

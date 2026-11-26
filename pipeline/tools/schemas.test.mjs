@@ -14,7 +14,7 @@ const CLI = path.join(PIPELINE, "bin", "pipeline.mjs");
 
 // ---------------------------------------------------------------------------------------
 test("every schema is self-consistent and uses only keywords the checker implements", () => {
-  for (const name of ["progress.schema.json", "findings.schema.json", "coverage-ledger.schema.json", "verdicts.schema.json"]) {
+  for (const name of ["progress.schema.json", "findings.schema.json", "coverage-ledger.schema.json", "verdicts.schema.json", "metrics.schema.json", "live-readiness.schema.json"]) {
     const schema = load(name);
     assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema", `${name}: missing $schema`);
     assert.ok(schema.$id && schema.title, `${name}: needs $id and title`);

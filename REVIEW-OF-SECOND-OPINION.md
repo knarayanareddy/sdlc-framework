@@ -709,3 +709,58 @@ a Docker-capable runner, `nuclei` + `schemathesis`, and a blind calibration run.
 reports calibration from `calibration/calibration.json` and marks it `stale` when it was measured
 on another pipeline version — this bump to 2.6.0 therefore invalidates any earlier calibration,
 which is the intended behaviour, not an oversight.
+
+## 16 · P6 prepared — the last mile as four commands (2026-11-26)
+
+Version `2.6.0 → 2.7.0`. P6 is the only phase that cannot be closed from inside this repository,
+so the deliverable is not "done": it is a harness that makes the remaining work **one command per
+item, with a definition of done that a file cannot satisfy**.
+
+The mistake this avoids is the one P0–P5 were about. It would have been easy to ship a
+`docs/13-live/` directory, a `CHECKLIST.md` with four boxes, and a gate that passes when the
+directory exists. `live-check.mjs` instead asks the environment:
+
+| Item | What "ready" actually requires | Not enough |
+|---|---|---|
+| verifier | builder family and verifier family both resolve, they differ, and a transport is configured | a `builderFamily` key; a model name nobody can resolve; a verifier in the same family (`PARTIAL`, and it says why) |
+| sandbox | `docker info` answers (real daemon round-trip), or bubblewrap + a working network namespace | a `docker` binary on `PATH` with a dead daemon — reported `PARTIAL`, not ready |
+| scanners | `nuclei -version` and `schemathesis --version` both exit 0 under `verify --run` | the binaries being present without answering |
+| calibration | `calibrate.mjs status` exits 0 **for this pipeline version** | a `calibration.json` measured on an older version (`PARTIAL`: "does not cover 2.7.0") |
+
+**Three commands, three jobs.** `probe` reports and writes `docs/13-live/live-readiness.json`
+(schema: `pipeline/schemas/live-readiness.schema.json`). `prep` does everything that does not
+need a credential, a runtime or a scanner — the hardening compose profile **generated and
+verified** (`sandbox.mjs profile` + `verify`), a paste-ready config snippet (it never edits your
+config), the DAST plan with install lines, a hash-sealed verifier envelope built from the real
+spec, and a deterministic 10-plant calibration plan with a **blank gitignored** answer file — then
+writes `docs/13-live/live-plan.md` from those probes so the document cannot drift from the tool.
+`verify --run` re-probes and exercises the binaries. `prep` never overwrites a file it finds; a
+second run says `exists, left alone`.
+
+**No fifth gate.** Each item names the gate that already consumes its evidence — `G0 --builtin
+sandbox`, `G8 --builtin dast`, `G9 --builtin independence`, `G12 --builtin calibrate` — and the
+readiness file is not read by any of them. Readiness is not a deliverable; the evidence is. A gate
+over `docs/13-live/` would pass on a directory, which is precisely the class of defect P0–P5
+removed, and the harness would have reintroduced it in the name of closing the loop.
+
+**Both entry points are the same code.** `pipeline live [probe|prep|verify]` shells to the tool
+and propagates its exit code (3 = `NOT_VERIFIED`), so it behaves like every other command in the
+orchestrator rather than like a status line that always succeeds.
+
+**The human's side is written down.** `pipeline/P6-LIVE.md`: what is already prepared, then four
+sections, each with the commands in order, an **Accepted when** line, and what to send back. The
+calibration section is the full procedure — throwaway branch, an agent that is not on the red
+team, a blind phase 08, then `score` — because that item needs a finished product rather than a
+credential, and it is the one most likely to be done wrong.
+
+**Verified.** `node --test pipeline/tools/*.test.mjs` → **227 tests, 0 failing** (was 216);
+`live-check.test.mjs` is new (10 tests) and they are all about the fail-closed rule: a docker
+stub whose daemon is dead must not be ready, `nuclei` alone must be `PARTIAL`, a verifier in the
+builder's family must be `PARTIAL`, a `calibration.json` from `0.0.1` must be `PARTIAL`,
+`prep` must leave an edited file alone and must not print PASS. `pipeline.test.mjs` gained one:
+`pipeline live` exits 3 on a bare host and still writes the artifact. `schemas.test.mjs` now
+covers six schemas.
+
+**What is still open.** The four items themselves. `probe` on this machine: 0/4 — no key, no
+docker, no scanners, no finished product. That is the honest state, and it is now one command to
+re-read.

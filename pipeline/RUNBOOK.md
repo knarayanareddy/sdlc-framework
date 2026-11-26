@@ -160,6 +160,25 @@ its verdict is never a bare PASS (`PASS (scoped to …; tag hygiene only, not a 
 A scope that selects no files exits 3. Do not record a scoped run as G7/G8's only evidence for a
 release: it covers part of the project by construction.
 
+## 6.2 · The four things only you can finish
+
+```bash
+node pipeline/bin/pipeline.mjs live           # where you stand, and the command that fixes each item
+node pipeline/bin/pipeline.mjs live prep      # write every artifact that does not need your key
+node pipeline/bin/pipeline.mjs live verify --run   # exercise the binaries; exit 0 only when all four are in place
+```
+
+| Item | Ready when | Flips |
+|---|---|---|
+| verifier | a model from a different family answers an envelope | `G9 --builtin independence` |
+| sandbox | `docker info` answers, and a command ran inside the container | `G0 --builtin sandbox` |
+| scanners | `nuclei -version` and `schemathesis --version` both work | `G8 --builtin dast` |
+| calibration | `calibrate.mjs status` exits 0 for this pipeline version | `G12 --builtin calibrate` |
+
+The step-by-step procedure, including the blind planted-bug round, is
+**[`P6-LIVE.md`](./P6-LIVE.md)**. `live-check` adds no gate of its own: readiness is not a
+deliverable, the evidence each item produces is.
+
 ## 7 · The worked example
 
 ```bash

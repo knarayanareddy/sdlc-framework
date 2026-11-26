@@ -327,7 +327,8 @@ and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
 ## 5 · The four commands that tell you where you stand
 
 ```bash
-node pipeline/tools/run-selftests.mjs                  # 22 test files + the traceability selftest: the code is intact
+node pipeline/tools/live-check.mjs probe                # all four layers at once, as a checklist
+node pipeline/tools/run-selftests.mjs                  # 23 test files + the traceability selftest: the code is intact
 node pipeline/tools/verifier-route.mjs status          # is a cross-family verifier available?
 node pipeline/tools/sandbox.mjs check                  # what can this host actually enforce?
 node pipeline/tools/dast.mjs plan                       # which scanners are installed?
@@ -335,7 +336,9 @@ node pipeline/tools/calibrate.mjs status --dir calibration   # is the red team c
 ```
 
 Anything that answers `NOT_VERIFIED` is not a failure of the pipeline — it is the honest state
-of your environment, and it is the exact list of what is left to integrate.
+of your environment, and it is the exact list of what is left to integrate. `live-check.mjs`
+runs all four at once and prints the command that fixes each: **[`P6-LIVE.md`](./P6-LIVE.md)**
+walks through them in order, including the blind calibration procedure.
 
 ## 6 · What is still not built, and why
 

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdlc-framework/pipeline/live-readiness.schema.json",
+  "title": "docs/13-live/live-readiness.json",
+  "description": "Written by pipeline/tools/live-check.mjs. One row per P6 item. `state: ready` means the item can be exercised, not that a file with the right name exists — live-check asks the docker daemon and the binaries, and reads the calibration score for this pipeline version.",
+  "type": "object",
+  "required": ["pipelineVersion", "probedAt", "items"],
+  "properties": {
+    "pipelineVersion": { "type": "string" },
+    "probedAt": { "type": "string" },
+    "verifiedAt": { "type": "string", "description": "set by `verify`, which also exercises the binaries" },
+    "exercised": { "type": "boolean", "description": "true when verify --run proved the binaries answer" },
+    "cwd": { "type": "string" },
+    "items": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "state", "why", "next", "accept", "flips"],
+        "properties": {
+          "id": { "enum": ["verifier", "sandbox", "scanners", "calibration"] },
+          "title": { "type": "string" },
+          "state": { "enum": ["ready", "partial", "blocked"] },
+          "why": { "type": "string" },
+          "next": { "type": "array", "items": { "type": "string" }, "description": "copy-pasteable commands, in order; never prose" },
+          "accept": { "type": "string", "description": "what a human has to see before this item may be called done" },
+          "flips": { "type": "string", "description": "the existing gate that consumes this item's evidence — live-check adds no gate of its own" },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["what", "value"],
+              "properties": {
+                "what": { "type": "string" },
+                "value": { "type": "string" },
+                "from": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

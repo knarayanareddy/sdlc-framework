@@ -3,7 +3,7 @@
 // whether a gate passed: it runs the gate's command itself, records the exit code,
 // and appends a hash-chained ledger entry.
 //
-//   node pipeline/bin/pipeline.mjs init | status | next | report
+//   node pipeline/bin/pipeline.mjs init | status | next | report | live
 //   node pipeline/bin/pipeline.mjs gate G5 --builtin trace:check,unit
 //   node pipeline/bin/pipeline.mjs gate G7 --not-verified --reason "no browser" --human-command "npx playwright test"
 //   node pipeline/bin/pipeline.mjs verify            # re-run every recorded gate
@@ -46,7 +46,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.6.0",
+  pipelineVersion: "2.7.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -984,6 +984,19 @@ switch (command) {
     break;
   }
 
+  case "live": {
+    // P6 · what this environment cannot do yet, and the one command that would fix each item.
+    // It is not a gate: the four items flip gates that already exist (G0, G8, G9, G12).
+    const mode = rest[0] ?? "probe";
+    if (!["probe", "prep", "verify"].includes(mode)) fail("usage: pipeline live [probe|prep|verify] [--run]");
+    const args = ["--cwd", projectRoot];
+    if (mode === "verify" && flags.run) args.push("--run");
+    const res = run(`node ${tool("live-check.mjs")} ${mode} ${args.join(" ")}`, { cwd: projectRoot });
+    console.log(res.stdout);
+    if (res.stderr) console.error(res.stderr);
+    process.exit(res.code ?? 1);
+  }
+
   case "selftests": {
     const res = run(`node ${tool("run-selftests.mjs")}`, { cwd: projectRoot });
     console.log(res.stdout);
@@ -1005,7 +1018,7 @@ switch (command) {
   }
 
   default:
-    fail(`unknown command "${command}". Try: init | status | next | gate | verify | phase | freeze | blocker | estimate | report | selftests`);
+    fail(`unknown command "${command}". Try: init | status | next | gate | verify | phase | freeze | blocker | estimate | report | live | selftests`);
 }
 
 void STATUSES;
