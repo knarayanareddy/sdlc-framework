@@ -35,6 +35,7 @@ export const LEDGER_FIELDS = Object.freeze([
   "evidence",
   "filesGivenToVerifier",
   "modelFamily",
+  "attestedBy",
   "prevHash",
   "hmac",
 ]);

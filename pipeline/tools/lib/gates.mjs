@@ -44,12 +44,22 @@ export const nextPhase = (id) => {
   return i >= 0 && i + 1 < PHASE_IDS.length ? PHASE_IDS[i + 1] : null;
 };
 
+// The only gate whose verdict *is* a document. Everywhere else `--evidence` recorded
+// `passed/exit 0` from a file the caller named, which made it a green button for nine gates,
+// G11 among them (SECOND-OPINION-3 G-01). A command gate has to run a command.
+export const EVIDENCE_GATES = Object.freeze(["G3"]);
+
+// A gate only a human can close. The builder shares the working tree, so this cannot be a
+// security boundary; it can refuse to let the builder sign for the human in silence.
+// Closing it needs `--attested-by <name>` and PIPELINE_HUMAN=1 (SECOND-OPINION-3 G-22).
+export const HUMAN_GATES = Object.freeze(["G11"]);
+
 // Default builtin set suggested for each gate, used by `pipeline next`.
 export const GATE_SUGGESTIONS = Object.freeze({
   G0: ["ledger", "protected"],
   G1: ["quotes"],
   G2: ["trace:structure"],
-  // G3/G4 are evidence gates: `--builtin manual` resolves to nothing and then errors
+  // G3 is the evidence gate: `--builtin manual` resolves to nothing and then errors
   // with "nothing to run" (F-18). Suggest the real command instead.
   G3: ["evidence:docs/03-design/design-brief.md,docs/03-design/tokens.json"],
   G4: ["plan"],

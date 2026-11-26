@@ -54,7 +54,7 @@ node pipeline/bin/pipeline.mjs phase done 01
 | 01 research | G1 | `gate G1 --builtin quotes` |
 | 02 spec | G2 | `gate G2 --builtin trace:structure` |
 | H1 digest | — | `phase done H1` (needs `docs/02-spec/DECISIONS.md`) |
-| 03 design | G3 | `gate G3 --evidence docs/03-design/design-brief.md,docs/03-design/tokens.json` |
+| 03 design | G3 | `gate G3 --evidence docs/03-design/design-brief.md,docs/03-design/tokens.json` (the only gate `--evidence` can close; every other gate runs a command) |
 | 04 architecture | G4 | `gate G4 --builtin plan` (threat model + authz matrix must agree with the spec) |
 | FZ freeze | — | `phase done FZ` (hashes `SPEC.md`) |
 | 05 tests | G5 | `gate G5 --builtin trace:freeze,trace:check,unit` |
@@ -63,7 +63,7 @@ node pipeline/bin/pipeline.mjs phase done 01
 | 08 red team | G8 | `gate G8 --builtin entrypoints,coverage,findings` |
 | 09 patch | G9 | `gate G9 --builtin findings,coverage` |
 | 10 release | G10 | `report`, then `gate G10 --builtin ledger,progress` |
-| 11 deploy | G11 | `gate G11 --not-verified --reason … --human-command …` |
+| 11 deploy | G11 | `PIPELINE_HUMAN=1 pipeline gate G11 --attested-by "<your name>"` — or `--not-verified --reason … --human-command …` if no human is present |
 | 12 eval | G12 | `gate G12 --builtin metrics` |
 
 ## 3 · When something cannot be evaluated

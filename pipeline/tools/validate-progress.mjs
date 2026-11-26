@@ -5,7 +5,7 @@
 //
 //   node pipeline/tools/validate-progress.mjs [docs/progress.json] [--json]
 import fs from "node:fs";
-import { GATE_IDS, PHASE_IDS, STATUSES } from "./lib/gates.mjs";
+import { GATE_IDS, PHASE_IDS, STATUSES, EVIDENCE_GATES, HUMAN_GATES } from "./lib/gates.mjs";
 import { parseArgs, readJson, fail } from "./lib/common.mjs";
 
 const { flags, positional } = parseArgs();
@@ -36,7 +36,19 @@ for (const [id, g] of Object.entries(p.gates ?? {})) {
   if (g.status === "passed") {
     if (typeof g.exitCode !== "number") problems.push(`${id}: passed without an exitCode (a gate is a command result, not an opinion)`);
     else if (g.exitCode !== 0) problems.push(`${id}: passed but exitCode is ${g.exitCode}`);
-    if (!g.command && !(Array.isArray(g.evidence) && g.evidence.length)) problems.push(`${id}: passed without a command or evidence files`);
+    // A human gate is closed by a named human, so the name is the evidence (SECOND-OPINION-3 G-22).
+    const attested = typeof g.attestedBy === "string" && g.attestedBy.trim().length > 0;
+    if (!g.command && !(Array.isArray(g.evidence) && g.evidence.length) && !attested) {
+      problems.push(`${id}: passed without a command, evidence files, or a human attestation`);
+    }
+    if (HUMAN_GATES.includes(id) && !attested) {
+      problems.push(`${id}: is a human gate and was passed without attestedBy (a builder cannot sign for a human)`);
+    }
+  }
+  // --evidence is only a verdict for the gate whose verdict is a document. Everywhere else it
+  // recorded a pass from a file the caller named (SECOND-OPINION-3 G-01).
+  if (g.commandSource === "evidence" && !EVIDENCE_GATES.includes(id)) {
+    problems.push(`${id}: passed on --evidence, but only ${EVIDENCE_GATES.join(", ")} may be closed by a document`);
   }
   if (g.status === "NOT_VERIFIED") {
     if (!g.reason || String(g.reason).trim().length < 8) problems.push(`${id}: NOT_VERIFIED without a reason`);

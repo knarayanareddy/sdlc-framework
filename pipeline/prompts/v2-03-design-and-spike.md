@@ -10,7 +10,7 @@ node pipeline/bin/pipeline.mjs gate G3 --evidence docs/03-design/design-brief.md
 node pipeline/bin/pipeline.mjs phase done 03
 ```
 
-`--evidence` records a judgement gate: the files must exist and be substantive, and a fresh reviewer still reads them. If you can make part of it mechanical, do: a token lint (`no colour or spacing in code that is not in tokens.json`) is the obvious candidate.
+`--evidence` records a judgement gate: the files must exist and be substantive, and a fresh reviewer still reads them. G3 is the only gate `--evidence` can close — every other gate has to run a command. If you can make part of it mechanical, do: a token lint (`no colour or spacing in code that is not in tokens.json`) is the obvious candidate.
 
 ROLE: senior product designer with a point of view. The product must look like it belongs to its audience, not to a template.
 
