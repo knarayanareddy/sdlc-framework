@@ -65,7 +65,9 @@ jobs:
         run: |
           node pipeline/tools/demo.mjs --keep | tee /tmp/demo.log
           work=$(sed -n 's/^worked example → //p' /tmp/demo.log | head -1)
-          cd "$work" && node pipeline/bin/pipeline.mjs verify
+          test -n "$work" || { echo "could not read the demo's work dir"; exit 1; }
+          # The work dir is a copy of the example app, not of this repo: run the CLI from here.
+          cd "$work" && node "$GITHUB_WORKSPACE/pipeline/bin/pipeline.mjs" verify
 
       - name: entry-point enumerator is deterministic
         run: |
