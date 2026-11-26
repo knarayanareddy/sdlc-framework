@@ -140,3 +140,28 @@ test("no spec is NOT_VERIFIED, never a silent pass", () => {
   assert.equal(r.status, 3);
   assert.match(r.stdout, /no spec at docs\/02-spec\/SPEC\.md/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.1 — an empty route list is not "0/0 covered" (G-12)
+// ---------------------------------------------------------------------------
+test("an empty entrypoints file does not replace the spec's route table", () => {
+  const partialAuthz = ["# Authorization matrix", "", "| Role | Route | Read | Write |", "|---|---|---|---|", "| member | `GET /api/items` | allow | — |", ""].join("\n");
+  const dir = project({ slices: ALL_SLICES, authz: partialAuthz, entrypoints: { entrypoints: [] } });
+  const res = run(dir, ["--require", "threat,authz"]);
+  // 2.7.0: `[]` is not nullish, so it replaced the spec table and printed "0/0 routes covered"
+  // … PASS while POST /api/items was not in the matrix at all.
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.doesNotMatch(res.stdout, /0\/0 routes covered/);
+  assert.match(res.stdout, /POST \/api\/items/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a matrix row must be an exact cell, not a substring", () => {
+  // `GET /api/items` used to pass on a row for `GET /api/items/:id` (B-23).
+  const idOnly = ["# Authorization matrix", "", "| Role | Route |", "|---|---|", "| member | `GET /api/items/:id` |", "| member | `POST /api/items` |", ""].join("\n");
+  const dir = project({ slices: ALL_SLICES, authz: idOnly });
+  const res = run(dir, ["--require", "authz"]);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(res.stdout, /GET \/api\/items is exposed but absent|not in docs\/04-architecture\/authz-matrix\.md: GET \/api\/items/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

@@ -6,15 +6,19 @@ on:
 
 jobs:
   tools:
-    name: pipeline tools (zero-dependency)
+    name: pipeline tools (zero-dependency, node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
 
       - name: every tool passes its own test
         run: node pipeline/tools/run-selftests.mjs
@@ -46,6 +50,22 @@ jobs:
           node pipeline/tools/sandbox.mjs run --copy pipeline/examples/mini-app \
             --cmd "node --test" --timeout 120000 --max-output 20000 \
             --out /tmp/sandbox-record.json
+
+      # The suite used to fail on any checkout under os.tmpdir(), which GitHub Actions never
+      # hits: the runner checks out under /home/runner/work (SECOND-OPINION-3 G-11/G-24).
+      - name: the suite also passes from a clone under $RUNNER_TEMP
+        run: |
+          git clone -q . "$RUNNER_TEMP/clone"
+          cd "$RUNNER_TEMP/clone"
+          node pipeline/tools/run-selftests.mjs
+
+      # `verify` re-runs every recorded gate and compares it with the ledger. CI never ran it,
+      # so nothing here would have noticed a ledger that no longer described the tree.
+      - name: verify a worked example end to end, and fail on drift
+        run: |
+          node pipeline/tools/demo.mjs --keep | tee /tmp/demo.log
+          work=$(sed -n 's/^worked example → //p' /tmp/demo.log | head -1)
+          cd "$work" && node pipeline/bin/pipeline.mjs verify
 
       - name: entry-point enumerator is deterministic
         run: |

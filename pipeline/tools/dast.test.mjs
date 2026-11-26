@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dast = path.join(here, "dast.mjs");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "dast-"));
-const cli = (args, cwd) => spawnSync("node", [dast, ...args], { encoding: "utf8", cwd: cwd ?? here, timeout: 120_000 });
+const cli = (args, cwd, env = {}) =>
+  spawnSync("node", [dast, ...args], { encoding: "utf8", cwd: cwd ?? here, timeout: 120_000, env: { ...process.env, ...env } });
 
 const FIXTURES = {
   semgrep: {
@@ -202,4 +203,26 @@ test("no scanner produced a parseable artifact, so nothing counts as `ran`", () 
   assert.equal(summary.tools.length, 4);
   for (const res of summary.tools) assert.equal(res.ran, false, `${res.name} claimed to have run`);
   assert.match(r.stdout, /human command/);
+});
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.1 — a stale artifact is not this run's output, and --target is a URL (G-17)
+// ---------------------------------------------------------------------------
+test("a stale artifact next to a failing scanner is not counted as ran", () => {
+  const d = tmp();
+  const bins = path.join(d, "bin");
+  fs.mkdirSync(bins);
+  fs.writeFileSync(path.join(bins, "nuclei"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(d, "nuclei.jsonl"), '{"template-id":"x"}\n');
+  const r = cli(["run", "--target", "http://127.0.0.1:9", "--out", d], d, { PATH: `${bins}:${process.env.PATH}` });
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.doesNotMatch(r.stdout, /RESULT: RAN/);
+});
+
+test("a --target that is not a plain URL is refused before any shell sees it", () => {
+  const d = tmp();
+  const r = cli(["run", "--target", `http://127.0.0.1:9; touch ${path.join(d, "pwned")}`], d);
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /not a plain http\(s\) URL/);
+  assert.equal(fs.existsSync(path.join(d, "pwned")), false);
 });

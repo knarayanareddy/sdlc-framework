@@ -2,7 +2,7 @@
 
 Input: `SPEC.md` (frozen), `slices.md`, design and architecture docs, red tests, frozen baseline
 Output: working code, green tests, `docs/06-build/slice-NN.md`, `docs/06-build/slice-NN-tripwire.log`, `docs/blockers.md`
-Gate: none of its own — this phase is rolling. Its exit check is "at least one slice log exists", enforced by `phase done 06`.
+Gate: none of its own — this phase is rolling. Its exit check is "at least one slice log exists, and every REQ/SEC/NFR id is cited by some slice", enforced by `phase done 06`.
 
 ```bash
 node pipeline/bin/pipeline.mjs phase start 06

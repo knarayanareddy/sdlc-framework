@@ -175,7 +175,12 @@ function cmdRun() {
   }
   // --require-all must gate execution, not describe it afterwards. It used to run the
   // command and then refuse to call the run sandboxed (F-11).
-  const unverifiedBefore = Object.entries(controls).filter(([, v]) => v === "NOT_VERIFIED").map(([k]) => k);
+  // A control that is simply `false` is a control that is NOT applied. --require-all used to
+  // look only for the string NOT_VERIFIED, so without --deny-network the command ran with
+  // network and still reported "4 control(s) applied" (SECOND-OPINION-3 G-18).
+  const unverifiedBefore = Object.entries(controls)
+    .filter(([, v]) => v === "NOT_VERIFIED" || v === false)
+    .map(([k]) => k);
   if (flags["require-all"] && unverifiedBefore.length) {
     console.error(paint.red(`--require-all: refusing to execute — ${unverifiedBefore.join(", ")} cannot be enforced on this host`));
     console.error(`[sandbox] human command: node pipeline/tools/sandbox.mjs profile --out docker-compose.sandbox.yml && docker compose -f docker-compose.sandbox.yml run --rm sandbox <cmd>`);
@@ -344,12 +349,32 @@ const FORBIDDEN = [
   { re: /docker\.sock/m, why: "mounting the docker socket is a full escape" },
   { re: /^\s*ipc:\s*"?host"?\s*$/m, why: "host IPC shares memory with the host" },
   { re: /:\s*rw\s*$/m, why: "no writable bind mounts of the host tree" },
+  // Everything below was invisible to the old file-wide lint: `cap_add: SYS_ADMIN`,
+  // `seccomp=unconfined`, `pid: host`, `devices:` and a plain read-write bind all passed
+  // (SECOND-OPINION-3 G-18).
+  { re: /^\s*cap_add:/m, why: "cap_add re-grants capabilities after cap_drop: ALL" },
+  { re: /^\s*seccomp\s*=\s*unconfined|^\s*seccomp:unconfined/m, why: "seccomp=unconfined removes the syscall filter" },
+  { re: /^\s*apparmor\s*=\s*unconfined/m, why: "apparmor=unconfined removes the mandatory access control" },
+  { re: /^\s*pid:\s*"?host"?\s*$/m, why: "host PID namespace lets the container see and signal host processes" },
+  { re: /^\s*userns_mode:\s*"?host"?\s*$/m, why: "host user namespace drops the uid mapping" },
+  { re: /^\s*devices:/m, why: "device passthrough reaches host hardware" },
+  { re: /^\s*label:\s*disable/m, why: "disabling the security label removes the MAC on the container" },
+  // A bind mount is writable unless it says otherwise; `:ro` has to be there.
+  { re: /^\s*-\s*[./]/, why: "every bind mount must end in :ro", onlyIfNoRo: true },
 ];
 
 function validateProfile(text) {
   const problems = [];
   for (const r of REQUIRED_LINES) if (!r.re.test(text)) problems.push(`missing ${r.key}: ${r.why}`);
-  for (const f of FORBIDDEN) if (f.re.test(text)) problems.push(`forbidden: ${f.why}`);
+  for (const f of FORBIDDEN) {
+    if (!f.re.test(text)) continue;
+    if (f.onlyIfNoRo) {
+      // Only the volume lines, and only when the same line does not say :ro.
+      const bad = text.split("\n").filter((line) => /^\s*-\s*[./]/.test(line) && line.includes(":") && !/:(ro|ro,Z|ro,z)\s*$/.test(line.trim()));
+      if (!bad.length) continue;
+    }
+    problems.push(`forbidden: ${f.why}`);
+  }
   const userLine = text.match(/^\s*user:\s*"?([\d:]+)"?\s*$/m);
   if (!userLine) problems.push("missing user: the container must name a non-root uid");
   return problems;

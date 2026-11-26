@@ -133,12 +133,15 @@ test("a verifier in the builder's own family never counts as independent", () =>
   assert.notEqual(r.status, 0);
 });
 
-test("builder family + another family + a transport is ready; the url/key are still listed", () => {
+test("a configured verifier is PARTIAL until something is dispatched", () => {
+  // probe reads three strings and runs nothing, so it may not say READY (SECOND-OPINION-3 G-19).
+  // READY comes from `verify --run`, which exercises the transport.
   const dir = project({ config: READY_CONFIG });
   live(dir, ["probe"]);
   const verifier = row(readiness(dir), "verifier");
-  assert.equal(verifier.state, "ready", verifier.why);
+  assert.equal(verifier.state, "partial", verifier.why);
   assert.match(verifier.why, /openai verifies anthropic/);
+  assert.match(verifier.why, /configured, not executed/);
 });
 
 test("one scanner is not two: nuclei alone is PARTIAL", () => {

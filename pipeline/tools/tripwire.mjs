@@ -31,6 +31,15 @@ const DEFAULT_CHECKS = [
 ];
 
 const checks = (config.tripwire ?? DEFAULT_CHECKS).filter((c) => !only || only.includes(c.name));
+
+// Zero checks is not a clean tree: `{"tripwire": []}` printed "checks: 0 … RESULT: PASS"
+// (SECOND-OPINION-3 G-21). A tripwire that ran nothing has nothing to say.
+if (checks.length === 0) {
+  console.log(paint.yellow("no tripwire checks are configured"));
+  console.log("RESULT: NOT_VERIFIED — a tripwire that runs nothing cannot fail");
+  console.log(`human command: node pipeline/tools/tripwire.mjs --config ${configPath}   # after restoring the checks`);
+  process.exit(3);
+}
 const MISSING_TOOL = /not found|No such file or directory|command not found|ENOENT/i;
 
 const results = [];

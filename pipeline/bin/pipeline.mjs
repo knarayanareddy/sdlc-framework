@@ -88,7 +88,6 @@ const DEFAULTS = {
     sast: "semgrep --config p/owasp-top-ten --error",
     secrets: "gitleaks detect --no-banner",
     deps: "osv-scanner --lockfile package-lock.json",
-    dast: "npx @zaproxy/zap-cli quick-scan --self-contained",
   },
 };
 
@@ -209,6 +208,14 @@ function builtin(name) {
     }
     case "sandbox":
       return `node ${tool("sandbox.mjs")} verify --file ${c.sandboxProfile}`;
+    case "dast": {
+      // The old default was `npx @zaproxy/zap-cli quick-scan`, and that package returns 404 on
+      // npm: a documented builtin that could not run (SECOND-OPINION-3 G-16). The real one is
+      // the repo's own harness, which exits 3 when no scanner produced a fresh artifact.
+      const target = cfg.dastTarget ?? process.env.PIPELINE_DAST_TARGET ?? "";
+      const dir = path.posix.dirname(String(c.entrypoints).replace(/\\/g, "/"));
+      return `node ${tool("dast.mjs")} run${target ? ` --target ${JSON.stringify(target)}` : ""} --require-all-tools --out ${dir}/floor`;
+    }
     case "calibrate":
       return `node ${tool("calibrate.mjs")} status --dir ${c.calibrationDir}`;
     default:
@@ -227,7 +234,9 @@ const BUILTINS = [
 // Artifact checks used by `phase done` where no single command can judge the work.
 const ARTIFACTS = {
   digest: [{ path: () => cfg.digest, label: "Decision Digest" }],
-  slices: [{ glob: "docs/06-build/slice-*.md", label: "at least one slice log" }],
+  // Was a hard-coded docs/06-build/slice-*.md while `plan:slices` used cfg.slicesGlob, so a
+  // configured glob checked two different sets of files (SECOND-OPINION-3 G-23).
+  slices: [{ glob: () => cfg.slicesGlob, label: "at least one slice log" }],
   release: [
     { path: () => cfg.finalReport, label: "FINAL-REPORT.md" },
     { path: () => "README.md", label: "README.md" },
@@ -241,13 +250,14 @@ function checkArtifacts(name) {
   const problems = [];
   for (const check of checks) {
     if (check.glob) {
-      const dir = abs(path.dirname(check.glob));
-      const base = path.basename(check.glob);
+      const pattern = typeof check.glob === "function" ? check.glob() : check.glob;
+      const dir = abs(path.dirname(pattern));
+      const base = path.basename(pattern);
       const star = base.indexOf("*");
       const prefix = star === -1 ? base : base.slice(0, star);
       const suffix = star === -1 ? "" : base.slice(star + 1);
       const hits = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith(suffix)) : [];
-      if (hits.length === 0) problems.push(`missing ${check.label} (${check.glob})`);
+      if (hits.length === 0) problems.push(`missing ${check.label} (${pattern})`);
       continue;
     }
     const rel = check.path();
@@ -1098,6 +1108,9 @@ switch (command) {
       ...(forced ? { forced: true, overridden: problems } : {}),
     };
     progress.phase = nextPhase(id) ?? id;
+    // A second red-team pass writes a different run directory; that is what makes it a round
+    // rather than a re-run of the same one (G-13).
+    if (flags.run) progress.runDir = String(flags.run);
     recordRound(progress, id);
     writeProgress(progress);
     // `phase done --force` used to write `passed, exitCode 0` and drop the problem list, so an
