@@ -1,0 +1,5 @@
+{
+  "commands": {
+    "unit": "node --test tests/items.test.mjs tests/security/idor.test.mjs"
+  }
+}

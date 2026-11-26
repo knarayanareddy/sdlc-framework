@@ -1,0 +1,9 @@
+{
+  "pipelineVersion": "2.0.0",
+  "product": "mini-app (worked example)",
+  "phases": { "00": "done", "01": "done", "02": "done", "03": "done", "04": "done", "05": "done", "06": "done", "07": "done", "08": "done", "09": "done", "10": "done", "11": "NOT_VERIFIED", "12": "done" },
+  "counts": { "requirements": 5, "tests": 4, "gates": 11, "notVerified": 1, "blockers": 0 },
+  "redTeam": { "fullRounds": 1, "diffRounds": 0, "confirmed": 1, "byTier": { "T1": 1, "T2": 0, "T3": 0 } },
+  "calibration": { "run": false, "reason": "needs a second model family and a finished product" },
+  "note": "Example numbers. A real run fills this from the gate ledger, not by hand."
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdlc-framework/pipeline/findings.schema.json",
+  "title": "docs/08-redteam/run-N/findings.json",
+  "description": "The skill's schema, plus the v2 evidence-tier sidecar fields. validate-findings.mjs is the executable version of this file.",
+  "type": "object",
+  "required": ["run", "mode", "findings"],
+  "properties": {
+    "run": { "type": "string" },
+    "mode": { "enum": ["FULL", "DIFF"] },
+    "profile": { "enum": ["standard", "deep"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "severity", "status", "location"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^F-[0-9]+$" },
+          "title": { "type": "string", "minLength": 8 },
+          "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+          "status": { "enum": ["confirmed", "needs_validation", "rejected"] },
+          "evidenceTier": { "enum": ["T1", "T2", "T3"] },
+          "location": { "type": "string", "pattern": ":" },
+          "impact": { "type": "string" },
+          "precondition": { "type": "string" },
+          "test": { "type": "string" },
+          "iterations": { "type": "number", "minimum": 20 },
+          "failureRate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "controlsChecked": { "type": "array", "items": { "type": "string" }, "minItems": 3 },
+          "verifiers": { "type": "array", "items": { "type": "string" }, "minItems": 2 },
+          "disproof": { "type": "string", "minLength": 10 },
+          "missing": { "type": "string", "minLength": 8 },
+          "humanCommand": { "type": "string" }
+        },
+        "allOf": [
+          { "if": { "properties": { "status": { "const": "confirmed" } } }, "then": { "required": ["evidenceTier"] } },
+          { "if": { "properties": { "status": { "const": "rejected" } } }, "then": { "required": ["disproof"] } },
+          { "if": { "properties": { "status": { "const": "needs_validation" } } }, "then": { "required": ["missing", "humanCommand"] } }
+        ]
+      }
+    }
+  }
+}

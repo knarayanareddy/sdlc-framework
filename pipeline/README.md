@@ -1,7 +1,49 @@
 # Autonomous Build Pipeline: Brief → Researched Spec → Built → Tested → Red-Teamed → Patched → Shipped
 
-This folder is the operating manual. `prompts/` holds one copy-paste prompt per phase.
-`templates/` holds the spec skeleton. `tools/` holds a mechanical gate checker.
+This folder is the operating manual **and** the executable pipeline. `prompts/` holds one
+copy-paste prompt per phase (`00`–`10` for v1, `v2-*` for the amended set). `templates/`
+holds the spec skeleton. `tools/` holds the gate checkers. `bin/pipeline.mjs` is the
+orchestrator that runs them.
+
+---
+
+## 0. v2 is executable — start here
+
+v1 was prose plus one regex tool. **v2 ships the missing mechanisms as programs**, each with
+its own test. Nothing below needs a model until a prompt tells you to dispatch one.
+
+```bash
+node pipeline/tools/run-selftests.mjs      # 10 test groups: no tool is trusted before its own test
+node pipeline/tools/gate-ledger.mjs demo   # the G0 tamper test
+node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
+
+cd /path/to/product
+node <repo>/pipeline/bin/pipeline.mjs init
+node pipeline/bin/pipeline.mjs gate G5 --builtin trace:freeze,trace:check,unit
+node pipeline/bin/pipeline.mjs verify      # re-run every recorded gate; names any DRIFT
+node pipeline/bin/pipeline.mjs report
+```
+
+| Tool | Closes | What it does |
+|---|---|---|
+| `bin/pipeline.mjs` | the missing state machine | runs gates itself, records exit codes, appends a hash-chained ledger, refuses phase transitions without prerequisites |
+| `tools/trace-check-v2.mjs` | R-01 | tags must sit on their own line, need a real assertion, no skips; `--baseline` freezes assertions **and test cases** |
+| `tools/gate-ledger.mjs` | R-02 | append-only hash chain; `demo` proves one edited line breaks it |
+| `tools/protected-paths.mjs` | R-02 | tests are append-only; the agent cannot edit the tool that gates it |
+| `tools/quote-verify.mjs` | R-05 | snapshots every source and requires the quote to be a substring |
+| `tools/entrypoints.mjs` | R-08 | enumerates every route, action, env read, raw SQL and outbound fetch |
+| `tools/coverage-gate.mjs` | R-08 | enumerated entry points must appear in the coverage ledger, examined or excluded with a reason |
+| `tools/validate-findings.mjs` | R-09 | evidence tiers T1/T2/T3, a real tagged repro test, T3 capped at Medium, a DIFF run cannot claim clean |
+| `tools/estimate.mjs` | R-03, R-10 | Chapman capture–recapture; refuses to guess from zero overlap |
+| `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED`, never green |
+| `tools/validate-progress.mjs` | R-15 | schema + invariants: `passed` needs exit 0, `NOT_VERIFIED` needs a reason and a human command |
+| `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
+
+Still **specified, not built** (say so in the report): cross-model verifier routing, the
+sandbox profile itself, planted-bug calibration, and the DAST/fuzz runners. `tripwire`
+reports each of those as `NOT_VERIFIED` with the command a human must run.
+
+Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**.
 
 ---
 
@@ -39,7 +81,7 @@ This folder is the operating manual. `prompts/` holds one copy-paste prompt per 
    │
    ▼
 [01 Intake + Research] ──► evidence ledger, ranked ideas, differentiation thesis
-   │  GATE G1: every claim has a URL/date; ≥3 competitors; ≥1 rejected idea with reason
+   │  GATE G1: every claim has a verified quote; ≥5 competitors; ≥10 quotes; ≥3 rejected ideas
    ▼
 [02 Spec] ──► SPEC.md (REQ/SEC/NFR IDs, Given/When/Then, data-flow table, budgets, slices)
    │  GATE G2: trace-check passes structure; reviewer agent can't find an untestable requirement
@@ -116,9 +158,17 @@ This folder is the operating manual. `prompts/` holds one copy-paste prompt per 
 
 ## 6. How to run
 
+**v2 (recommended, executable):**
+
+1. `node pipeline/bin/pipeline.mjs init` in the target repo, then edit `pipeline.config.json`.
+2. Drive one phase per fresh agent session with `phase start` → prompt → `gate` → `phase done`. `pipeline next` prints what to do.
+3. Read [`RUNBOOK.md`](./RUNBOOK.md) for every command, and `prompts/v2-99-orchestrator.md` for the loop a driving model should follow.
+
+**v1 (prose only, kept for reference):**
+
 1. Create `docs/00-intake/brief.md` with your brief.
-2. Run `prompts/00-orchestrator.md` for end-to-end runs in agents with sub-agent support (Claude Code or Codex). Otherwise paste prompts `01` to `10` in order, one per fresh session.
+2. Run `prompts/00-orchestrator.md` for end-to-end runs in agents with sub-agent support. Otherwise paste prompts `01` to `10` in order, one per fresh session.
 3. Install the skills the prompts name, following each repo's README: `cloudflare/security-audit-skill` and `trailofbits/skills`. If a skill is missing, each prompt has a fallback checklist.
-4. After any phase, check status with: `node pipeline/tools/trace-check.mjs docs/02-spec/SPEC.md tests --allow-uncovered`
+4. Check status with: `node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered`
 
 Default stack assumed by the prompts: Next.js App Router, Drizzle + Postgres, Vitest, fast-check, Playwright, axe-core, Stryker. Swap if your repo differs.

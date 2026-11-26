@@ -1,0 +1,23 @@
+{
+  "url": "file:docs/01-research/sources/forum-thread.txt",
+  "accessed": "2026-11-26",
+  "sourceType": "forum",
+  "injectionSuspected": false,
+  "claims": [
+    {
+      "claim": "People get confused about whether lists are per team or per user.",
+      "quote": "I understood that lists were per team and not per user",
+      "confidence": "M"
+    },
+    {
+      "claim": "Spreadsheets win by already being open.",
+      "quote": "I gave up and used a spreadsheet instead",
+      "confidence": "M"
+    },
+    {
+      "claim": "Read-state memory is the switching trigger.",
+      "quote": "the second tool remembered what I had already read",
+      "confidence": "M"
+    }
+  ]
+}

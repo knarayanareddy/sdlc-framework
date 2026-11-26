@@ -1,0 +1,12 @@
+{
+  "run": "RUN-1",
+  "mode": "FULL",
+  "profile": "standard",
+  "note": "Hand-written for the worked example. A real run is filled in by hunters; the gate checks that every enumerated entry point appears here.",
+  "units": [
+    { "id": "env:DATABASE_URL", "status": "examined", "hunter": "H2", "attackClasses": ["data-isolation", "supply-chain"] },
+    { "id": "route:GET /api/items", "status": "examined", "hunter": "H1", "attackClasses": ["access-control", "data-isolation"] },
+    { "id": "route:POST /api/items", "status": "examined", "hunter": "H1", "attackClasses": ["injection", "business-logic"] },
+    { "id": "subsystem:can-read", "status": "examined", "hunter": "H1", "attackClasses": ["access-control"] }
+  ]
+}

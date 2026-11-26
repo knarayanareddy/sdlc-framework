@@ -1,0 +1,31 @@
+{
+  "root": ".",
+  "counts": {
+    "env": 1,
+    "route": 2
+  },
+  "total": 3,
+  "entrypoints": [
+    {
+      "id": "env:DATABASE_URL",
+      "kind": "env",
+      "file": "src/app/api/items/route.ts",
+      "line": 3,
+      "detail": "DATABASE_URL"
+    },
+    {
+      "id": "route:GET /api/items",
+      "kind": "route",
+      "file": "src/app/api/items/route.ts",
+      "line": 5,
+      "detail": "GET /api/items"
+    },
+    {
+      "id": "route:POST /api/items",
+      "kind": "route",
+      "file": "src/app/api/items/route.ts",
+      "line": 10,
+      "detail": "POST /api/items"
+    }
+  ]
+}

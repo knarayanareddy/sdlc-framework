@@ -443,4 +443,4 @@ export const KEEP = [
   "'Never state no vulnerabilities'",
 ];
 
-export const PROMPT_ORDER = ["v2-00", "v2-01", "v2-05", "v2-08", "v2-11", "v2-12"] as const;
+export const PROMPT_ORDER = ["v2-00", "v2-01", "v2-02", "v2-03", "v2-04", "v2-05", "v2-06", "v2-07", "v2-08", "v2-09", "v2-10", "v2-11", "v2-12", "v2-99"] as const;
