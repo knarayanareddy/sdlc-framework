@@ -26,7 +26,7 @@ export const PHASES = Object.freeze([
   { id: "04", title: "Architecture + threat model", prompt: "v2-04-architecture.md", gates: ["G4"], requiresGates: ["G2"], requiresPhases: ["02"], doneChecks: [] },
   { id: "FZ", title: "Spec freeze", prompt: "v2-02-spec-and-freeze.md", gates: [], requiresGates: ["G3", "G4"], requiresPhases: ["H1"], doneChecks: ["freeze"] },
   { id: "05", title: "Test strategy + baseline", prompt: "v2-05-test-integrity-and-tripwire.md", gates: ["G5"], requiresGates: [], requiresPhases: ["FZ"], doneChecks: ["trace:check"] },
-  { id: "06", title: "Build in vertical slices", prompt: "v2-06-build-slices.md", gates: [], requiresGates: ["G5"], requiresPhases: ["05"], doneChecks: ["slices"] },
+  { id: "06", title: "Build in vertical slices", prompt: "v2-06-build-slices.md", gates: [], requiresGates: ["G5"], requiresPhases: ["05"], doneChecks: ["slices", "plan:slices"] },
   { id: "07", title: "QA + verification sweep", prompt: "v2-07-qa-verification.md", gates: ["G7"], requiresGates: [], requiresPhases: ["06"], doneChecks: [] },
   { id: "08", title: "Red team", prompt: "v2-08-redteam.md", gates: ["G8"], requiresGates: ["G7"], requiresPhases: ["07"], doneChecks: ["entrypoints", "coverage", "findings"] },
   { id: "09", title: "Patch + post-patch validation", prompt: "v2-09-patch-and-validate.md", gates: ["G9"], requiresGates: ["G8"], requiresPhases: ["08"], doneChecks: ["findings", "coverage"] },
@@ -52,7 +52,7 @@ export const GATE_SUGGESTIONS = Object.freeze({
   // G3/G4 are evidence gates: `--builtin manual` resolves to nothing and then errors
   // with "nothing to run" (F-18). Suggest the real command instead.
   G3: ["evidence:docs/03-design/design-brief.md,docs/03-design/tokens.json"],
-  G4: ["evidence:docs/04-architecture/threat-model.md,docs/04-architecture/authz-matrix.md"],
+  G4: ["plan"],
   G5: ["trace:freeze", "trace:check", "unit"],
   G7: ["types", "lint", "unit", "build"],
   G8: ["entrypoints", "coverage", "findings"],

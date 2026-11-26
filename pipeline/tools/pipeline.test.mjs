@@ -289,3 +289,63 @@ test("with the builder declared, independence is judged and can pass", () => {
   assert.equal(progressOf(dir).gates.G9.status, "passed");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// P5 · The reported numbers come from the evidence, and the report is not stale
+// ---------------------------------------------------------------------------
+test("gate G12 computes metrics from the ledger instead of checking a file exists", () => {
+  const dir = project("p5-metrics");
+  // A hand-written metrics file used to satisfy G12. This one is a lie and must be replaced.
+  fs.mkdirSync(path.join(dir, "docs", "12-eval"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "12-eval", "metrics.json"), JSON.stringify({ computed: false, pipelineVersion: "0.0.0", counts: { gates: 99 } }));
+
+  const res = cli(dir, ["gate", "G12", "--builtin", "metrics"]);
+  assert.equal(res.status, 0, `expected G12 to pass by computing metrics:\n${res.stdout}${res.stderr}`);
+  const metrics = readJson(path.join(dir, "docs", "12-eval", "metrics.json"));
+  assert.equal(metrics.computed, true);
+  assert.ok(metrics.derivedFrom.ledger.sha256, "the ledger bytes the numbers came from must be named");
+  assert.notEqual(metrics.counts.gates, 99, "the hand-written number must not survive");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("phase 12 rewrites FINAL-REPORT.md, so a report cannot describe an older ledger", () => {
+  const dir = project("p5-report");
+  // A report written before the later gates existed.
+  fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "# Final report\n\nstale: written when G0 was the only gate\n");
+
+  assert.equal(cli(dir, ["gate", "G12", "--builtin", "metrics"]).status, 0);
+  const progress = progressOf(dir);
+  progress.phases["12"] = { status: "started", at: new Date().toISOString() };
+  fs.writeFileSync(path.join(dir, "docs", "progress.json"), JSON.stringify(progress, null, 2));
+
+  const done = cli(dir, ["phase", "done", "12"]);
+  assert.equal(done.status, 0, `expected phase 12 to complete:\n${done.stdout}${done.stderr}`);
+  const report = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.doesNotMatch(report, /stale: written when G0/, "the old report must be replaced, not appended to");
+  assert.match(report, /- metrics: computed from /, "the report states where the metrics came from");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("phase 08 records the round the findings file says was run", () => {
+  const dir = project("p5-rounds");
+  fs.mkdirSync(path.join(dir, "docs", "08-redteam", "run-1"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "08-redteam", "run-1", "findings.json"), JSON.stringify({ run: "RUN-1", mode: "FULL", findings: [] }));
+  // Phase 08's other done-checks still apply, and entrypoints is re-enumerated from source:
+  // a route the ledger does not cover would fail the phase, so give the project one route.
+  fs.mkdirSync(path.join(dir, "src/app/api/health"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src/app/api/health/route.ts"), "export async function GET() {\n  return new Response('ok');\n}\n");
+  fs.writeFileSync(path.join(dir, "docs", "08-redteam", "run-1", "coverage-ledger.json"), JSON.stringify({ run: "RUN-1", mode: "FULL", units: [{ id: "route:GET /api/health", status: "examined", hunter: "H1" }] }));
+  const progress = progressOf(dir);
+  progress.phases["08"] = { status: "started", at: new Date().toISOString() };
+  progress.gates.G8 = { status: "passed", command: "gate G8", exitCode: 0, at: new Date().toISOString() };
+  fs.writeFileSync(path.join(dir, "docs", "progress.json"), JSON.stringify(progress, null, 2));
+
+  const res = cli(dir, ["phase", "done", "08"]);
+  assert.equal(res.status, 0, `expected phase 08 to complete:\n${res.stdout}${res.stderr}`);
+  const after = progressOf(dir);
+  assert.deepEqual(after.rounds, { full: 1, diff: 0 }, "rounds used to be a literal zero forever");
+  assert.equal(after.roundLog.length, 1);
+  assert.equal(after.roundLog[0].mode, "FULL");
+  fs.rmSync(dir, { recursive: true, force: true });
+});

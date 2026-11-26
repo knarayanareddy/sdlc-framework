@@ -126,3 +126,40 @@ test("a fetch with a template-literal URL is an SSRF surface", () => {
   const { entrypoints } = JSON.parse(fs.readFileSync(out, "utf8"));
   assert.ok(entrypoints.some((e) => e.kind === "outboundFetch"), JSON.stringify(entrypoints));
 });
+
+// ---- P4 · brownfield scoping ---------------------------------------------------------
+// Scoping is about the project being changed, so these run with cwd = the fixture project.
+const runIn = (dir, args) => spawnSync("node", [TOOL, ...args], { encoding: "utf8", cwd: dir });
+
+test("--scope restricts the enumeration and the output says it was scoped", () => {
+  const dir = fixture({
+    "app/api/items/route.ts": "export async function GET() { return Response.json([]); }\n",
+    "lib/report/route.ts": "export async function GET() { return Response.json({}); }\n",
+  });
+  const out = path.join(dir, "ep.json");
+  const scoped = runIn(dir, ["--root", ".", "--out", out, "--scope", "app/api"]);
+  assert.equal(scoped.status, 0, scoped.stdout + scoped.stderr);
+  assert.match(scoped.stdout, /SCOPED \(under app\/api\)/);
+  const parsed = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(parsed.scoped, "under app/api");
+  assert.deepEqual(parsed.entrypoints.map((e) => e.file), ["app/api/items/route.ts"]);
+});
+
+test("--changed-since follows git and a scope that selects nothing is NOT_VERIFIED", () => {
+  const dir = fixture({ "app/api/items/route.ts": "export async function GET() {}\n", "app/api/ping/route.ts": "export async function GET() {}\n" });
+  const git = (...args) => spawnSync("git", ["-c", "user.email=t@e.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  // Only this file changes after the base commit.
+  fs.writeFileSync(path.join(dir, "app/api/ping/route.ts"), "export async function GET() { return Response.json({}); }\n");
+  const out = path.join(dir, "ep.json");
+  const r = runIn(dir, ["--root", ".", "--out", out, "--changed-since", "HEAD"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /SCOPED \(changed since HEAD \(1 file\)\)/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, "utf8")).entrypoints.map((e) => e.file), ["app/api/ping/route.ts"]);
+
+  const empty = runIn(dir, ["--root", ".", "--out", path.join(dir, "none.json"), "--scope", "lib"]);
+  assert.equal(empty.status, 3);
+  assert.match(empty.stdout, /the scope \(under lib\) contains no entry points/);
+});

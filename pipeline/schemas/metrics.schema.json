@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdlc-framework/pipeline/metrics.schema.json",
+  "title": "docs/12-eval/metrics.json",
+  "description": "Written by pipeline/tools/metrics-compute.mjs. `computed: true` means every number below was derived from the files named in `derivedFrom`; a hand-written file must say `computed: false`, which is how a reader tells the two apart.",
+  "type": "object",
+  "required": [
+    "computed",
+    "pipelineVersion"
+  ],
+  "properties": {
+    "computed": {
+      "type": "boolean",
+      "description": "true only when metrics-compute.mjs produced this file"
+    },
+    "pipelineVersion": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "product": {
+      "type": "string",
+      "description": "free-text label; the computed file does not set it"
+    },
+    "note": {
+      "type": "string"
+    },
+    "at": {
+      "type": "string",
+      "description": "ISO timestamp of the computation"
+    },
+    "phase": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phases": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(0[0-9]|1[0-2])$"
+      },
+      "additionalProperties": {
+        "enum": [
+          "started",
+          "done",
+          "blocked",
+          "unknown"
+        ],
+        "description": "same values as progress.schema.json's phases[].status, plus unknown for a phase the progress file does not mention"
+      }
+    },
+    "gates": {
+      "type": "object",
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "NOT_VERIFIED"
+      ],
+      "properties": {
+        "total": {
+          "type": "number",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "number",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "number",
+          "minimum": 0
+        },
+        "NOT_VERIFIED": {
+          "type": "number",
+          "minimum": 0
+        },
+        "notVerifiedList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "requirements": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "null when the spec could not be read"
+        },
+        "tests": {
+          "type": "number",
+          "minimum": 0
+        },
+        "gates": {
+          "type": "number",
+          "minimum": 0
+        },
+        "notVerified": {
+          "type": "number",
+          "minimum": 0
+        },
+        "blockers": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ledgerEntries": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "redTeam": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "confirmed",
+        "fullRounds",
+        "diffRounds"
+      ],
+      "properties": {
+        "artefact": {
+          "type": "string"
+        },
+        "mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fullRounds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "diffRounds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "confirmed": {
+          "type": "number",
+          "minimum": 0
+        },
+        "needsValidation": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rejected": {
+          "type": "number",
+          "minimum": 0
+        },
+        "byTier": {
+          "type": "object",
+          "required": [
+            "T1",
+            "T2",
+            "T3"
+          ],
+          "properties": {
+            "T1": {
+              "type": "number",
+              "minimum": 0
+            },
+            "T2": {
+              "type": "number",
+              "minimum": 0
+            },
+            "T3": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "type": "boolean"
+        },
+        "calibrated": {
+          "type": "boolean"
+        },
+        "recall": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "planted": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "requiredHits": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pipelineVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "true when the measurement belongs to another pipeline version"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "derivedFrom": {
+      "type": "object",
+      "description": "One entry per source file: where the number came from and the exact bytes it was read from.",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "entries": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "computed": {
+            "const": true
+          }
+        },
+        "required": [
+          "computed"
+        ]
+      },
+      "then": {
+        "required": [
+          "derivedFrom",
+          "at",
+          "pipelineVersion"
+        ]
+      },
+      "description": "A computed file must name its sources. A hand-written one may not claim to."
+    }
+  ]
+}

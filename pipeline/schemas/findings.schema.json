@@ -24,18 +24,21 @@
           "impact": { "type": "string" },
           "precondition": { "type": "string" },
           "test": { "type": "string" },
-          "iterations": { "type": "number", "minimum": 20 },
-          "failureRate": { "type": "number", "minimum": 0, "maximum": 1 },
-          "controlsChecked": { "type": "array", "items": { "type": "string" }, "minItems": 3 },
-          "verifiers": { "type": "array", "items": { "type": "string" }, "minItems": 2 },
-          "disproof": { "type": "string", "minLength": 10 },
+          "iterations": { "type": "number" },
+          "failureRate": { "type": "number" },
+          "controlsChecked": { "type": "array", "items": { "type": "string" } },
+          "verifiers": { "type": "array", "items": { "type": "string" } },
+          "disproof": { "type": "string" },
           "missing": { "type": "string", "minLength": 8 },
           "humanCommand": { "type": "string" }
         },
         "allOf": [
-          { "if": { "properties": { "status": { "const": "confirmed" } } }, "then": { "required": ["evidenceTier"] } },
-          { "if": { "properties": { "status": { "const": "rejected" } } }, "then": { "required": ["disproof"] } },
-          { "if": { "properties": { "status": { "const": "needs_validation" } } }, "then": { "required": ["missing", "humanCommand"] } }
+          { "if": { "properties": { "status": { "const": "confirmed" } }, "required": ["status"] }, "then": { "required": ["evidenceTier"] } },
+          { "if": { "properties": { "status": { "const": "rejected" } }, "required": ["status"] }, "then": { "required": ["disproof"], "properties": { "disproof": { "minLength": 10 } } } },
+          { "if": { "properties": { "status": { "const": "needs_validation" } }, "required": ["status"] }, "then": { "required": ["missing", "humanCommand"], "properties": { "missing": { "minLength": 8 } } } },
+          { "if": { "properties": { "evidenceTier": { "const": "T1" } }, "required": ["evidenceTier"] }, "then": { "required": ["test"], "description": "T1 is a reproduction test. The validator additionally requires that the file exists, carries the @finding tag and asserts after it — existence and content are code-only rules." } },
+          { "if": { "properties": { "evidenceTier": { "const": "T2" } }, "required": ["evidenceTier"] }, "then": { "required": ["failureRate", "iterations"], "properties": { "iterations": { "minimum": 20 }, "failureRate": { "exclusiveMinimum": 0, "maximum": 1 }, "description": "T2 is a measured rate: >= 20 iterations and a failureRate in (0, 1]. 0 means the attack never worked, which is not a confirmed finding." } } },
+          { "if": { "properties": { "evidenceTier": { "const": "T3" } }, "required": ["evidenceTier"] }, "then": { "required": ["controlsChecked", "verifiers"], "properties": { "controlsChecked": { "minItems": 3 }, "verifiers": { "minItems": 2 } }, "description": "T3 is triangulation: >= 3 controls checked and >= 2 verifiers from distinct known families (family distinctness is code-only)." } }
         ]
       }
     }

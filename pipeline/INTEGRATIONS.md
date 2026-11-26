@@ -308,7 +308,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# NOT_VERIFIED: calibration has not been run for pipeline 2.5.0
+# NOT_VERIFIED: calibration has not been run for pipeline 2.6.0
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
@@ -327,7 +327,7 @@ and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
 ## 5 · The four commands that tell you where you stand
 
 ```bash
-node pipeline/tools/run-selftests.mjs                  # 18 test files + the traceability selftest: the code is intact
+node pipeline/tools/run-selftests.mjs                  # 22 test files + the traceability selftest: the code is intact
 node pipeline/tools/verifier-route.mjs status          # is a cross-family verifier available?
 node pipeline/tools/sandbox.mjs check                  # what can this host actually enforce?
 node pipeline/tools/dast.mjs plan                       # which scanners are installed?

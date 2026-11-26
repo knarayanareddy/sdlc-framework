@@ -75,7 +75,7 @@ step("", ["gate", "G3", "--evidence", "docs/03-design/design-brief.md,docs/03-de
 step("", ["phase", "done", "03"]);
 
 step("phase 04", ["phase", "start", "04"]);
-step("", ["gate", "G4", "--evidence", "docs/04-architecture/threat-model.md,docs/04-architecture/authz-matrix.md"]);
+step("", ["gate", "G4", "--builtin", "plan"]);
 step("", ["phase", "done", "04"]);
 
 step("phase FZ (freeze)", ["phase", "start", "FZ"]);

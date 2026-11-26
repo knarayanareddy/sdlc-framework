@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, writeJson, walk, paint, fail } from "./lib/common.mjs";
+import { assertScopeResolved, printScope, resolveScope } from "./lib/scope.mjs";
 
 const { flags } = parseArgs();
 const root = path.resolve(flags.root ?? ".");
@@ -125,17 +126,38 @@ for (const abs of files) {
   }
 }
 
-const entrypoints = [...found.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+// Brownfield: --scope <prefix,...> and/or --changed-since <ref> restrict the enumeration to
+// the part of the app that changed. The run says it was scoped, and a scope that selects
+// nothing is NOT_VERIFIED rather than an empty (and therefore "clean") list.
+const scope = resolveScope({ scope: flags.scope, changedSince: flags["changed-since"], cwd: process.cwd() });
+assertScopeResolved(scope, `node pipeline/tools/entrypoints.mjs --root ${root} --changed-since <ref>   # or drop the scope flags`);
+const entrypoints = [...found.values()]
+  .filter((e) => !scope || scope.matches(e.file))
+  .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 const counts = entrypoints.reduce((acc, e) => ({ ...acc, [e.kind]: (acc[e.kind] ?? 0) + 1 }), {});
 
-const payload = { ...(stable ? {} : { generatedAt: new Date().toISOString() }), root: stable ? "." : path.basename(root), counts, total: entrypoints.length, entrypoints };
+const payload = {
+  ...(stable ? {} : { generatedAt: new Date().toISOString() }),
+  root: stable ? "." : path.basename(root),
+  ...(scope ? { scoped: scope.label } : {}),
+  counts,
+  total: entrypoints.length,
+  entrypoints,
+};
 
+printScope(scope);
 if (outPath) {
   writeJson(outPath, payload);
   console.log(`entrypoints: ${entrypoints.length} → ${path.relative(process.cwd(), outPath) || outPath}`);
   console.log(Object.entries(counts).map(([k, v]) => `  ${k}: ${v}`).join("\n"));
   if (entrypoints.length === 0) {
-    console.log(paint.yellow("NOT_VERIFIED: no entry points found, so coverage cannot be claimed"));
+    console.log(
+      paint.yellow(
+        scope
+          ? `NOT_VERIFIED: the scope (${scope.label}) contains no entry points, so coverage cannot be claimed`
+          : "NOT_VERIFIED: no entry points found, so coverage cannot be claimed",
+      ),
+    );
     console.log(`human command: node pipeline/tools/entrypoints.mjs --root <the app directory> --out ${path.relative(process.cwd(), outPath) || outPath}`);
     process.exit(3);
   }

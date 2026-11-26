@@ -13,6 +13,7 @@
 //   node pipeline/bin/pipeline.mjs blocker add --phase 06 --text "..." --fallback "..."
 import fs from "node:fs";
 import path from "node:path";
+import { recordRound as recordRoundFromFile } from "../tools/lib/rounds.mjs";
 import { fileURLToPath } from "node:url";
 import {
   parseArgs,
@@ -45,7 +46,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.5.0",
+  pipelineVersion: "2.6.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -67,6 +68,9 @@ const DEFAULTS = {
   fuzzBase: "http://127.0.0.1:3000",
   sandboxProfile: "docker-compose.sandbox.yml",
   calibrationDir: "calibration",
+  threatModel: "docs/04-architecture/threat-model.md",
+  authzMatrix: "docs/04-architecture/authz-matrix.md",
+  slicesGlob: "docs/06-build/slice-*.md",
   independence: { builderFamily: "unknown", requireFor: ["G7", "G9", "G12"] },
   blockers: "docs/blockers.md",
   commands: {
@@ -180,11 +184,19 @@ function builtin(name) {
     case "digest":
       return `node ${tool("expect-files.mjs")} ${c.digest}`;
     case "metrics":
-      return `node ${tool("expect-files.mjs")} ${c.evalDir}/metrics.json`;
+      // Computed from the ledger, not checked for existence: a hand-written metrics.json used
+      // to satisfy this gate (REVIEW-OF-SECOND-OPINION.md §7 P5).
+      return `node ${tool("metrics-compute.mjs")} --progress ${c.progress} --ledger ${c.ledger} --findings ${c.findings} --calibration ${c.calibrationDir}/calibration.json --spec ${c.spec} --out ${c.evalDir}/metrics.json`;
     case "release":
       return `node ${tool("expect-files.mjs")} ${c.finalReport} README.md .env.example`;
     case "slices":
-      return `node ${tool("expect-files.mjs")} --glob "docs/06-build/slice-*.md"`;
+      return `node ${tool("expect-files.mjs")} --glob "${c.slicesGlob}"`;
+    case "plan":
+      // Substance, not existence: does the plan agree with itself? G4 cannot see slice logs
+      // (they do not exist until phase 06), so slices are required by `plan:slices` instead.
+      return `node ${tool("plan-check.mjs")} --spec ${c.spec} --threat-model ${c.threatModel} --authz-matrix ${c.authzMatrix} --entrypoints ${c.entrypoints}`;
+    case "plan:slices":
+      return `node ${tool("plan-check.mjs")} --spec ${c.spec} --threat-model ${c.threatModel} --authz-matrix ${c.authzMatrix} --entrypoints ${c.entrypoints} --slices "${c.slicesGlob}" --require threat,authz,slices`;
     case "independence":
       return `node ${tool("independence.mjs")} --ledger ${c.ledger} --config ${c.configPath}`;
     case "fuzz": {
@@ -204,7 +216,7 @@ const BUILTINS = [
   "types", "lint", "unit", "build", "e2e", "a11y", "mutation", "sast", "secrets", "deps", "dast",
   "trace:structure", "trace:freeze", "trace:check", "quotes", "entrypoints", "coverage", "findings",
   "progress", "ledger", "protected", "tripwire", "selftests",
-  "digest", "metrics", "release", "slices", "manual",
+  "digest", "metrics", "release", "slices", "plan", "plan:slices", "manual",
   "independence", "fuzz", "sandbox", "calibrate",
 ];
 
@@ -353,6 +365,152 @@ function recordGate(gate, entry, extra = {}) {
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+// `report` is a function because it is now called from two places: the command, and the
+// end of phases 10-12, where a stale FINAL-REPORT.md is worse than none (REVIEW-OF-SECOND-OPINION.md P5).
+// `progress.rounds` is derived from the findings file, not typed (see lib/rounds.mjs).
+function recordRound(progress, phaseId) {
+  const before = JSON.stringify(progress.rounds ?? null);
+  const after = recordRoundFromFile(progress, phaseId, abs(cfg.findings));
+  if (!after) return;
+  if (before !== JSON.stringify(after.rounds)) {
+    console.log(paint.dim(`rounds recorded from ${cfg.findings}: FULL=${after.rounds.full} DIFF=${after.rounds.diff}`));
+  }
+}
+
+function writeReport() {
+  const progress = readProgress();
+  const ledger = verifyLedger(abs(cfg.ledger));
+  let entries = [];
+  try {
+    entries = readLedger(abs(cfg.ledger));
+  } catch (error) {
+    warn(`ledger unreadable, report will treat it as empty: ${error.message}`);
+  }
+  const specFileAbs = abs(cfg.spec);
+  const hashFileAbs = abs(cfg.specHash);
+  const specProblemReport = specDrift();
+  const specLine = !fs.existsSync(hashFileAbs)
+    ? "**not frozen** — `pipeline freeze` has not run"
+    : specProblemReport
+      ? `**DRIFT** — ${specProblemReport}`
+      : `frozen at ${fs.readFileSync(hashFileAbs, "utf8").trim().split(/\s+/)[0].slice(0, 12)}…`;
+  const gateRows = GATE_IDS.map((id) => {
+    const g = progress.gates[id];
+    if (!g) return `| ${id} | not evaluated | — | — | — |`;
+    const status = g.status === "passed" ? "passed" : g.status === "failed" ? "**failed**" : "NOT_VERIFIED";
+    const cmd = g.command ? `\`${g.command.replace(/\|/g, "\\|")}\`` : g.evidence ? `evidence: ${g.evidence.join(", ")}` : "explicit approval";
+    return `| ${id} | ${status} | ${g.exitCode ?? "—"} | ${cmd} | ${g.at ?? "—"} |`;
+  });
+  const notVerified = Object.entries(progress.gates).filter(([, g]) => g.status === "NOT_VERIFIED");
+  const estimateFile = abs(path.join(cfg.evalDir, "estimate.json"));
+  const estimate = fs.existsSync(estimateFile) ? readJson(estimateFile) : null;
+
+  // Calibration and independence are the two claims a reader is most likely to over-read.
+  const calibFile = path.join(cfg.calibrationDir, "calibration.json");
+  const calib = fs.existsSync(abs(calibFile)) ? readJson(abs(calibFile)) : null;
+  const calibrationLine = !calib
+    ? `**not run** for ${cfg.pipelineVersion} — a zero-finding round is not evidence of a clean codebase (\`node pipeline/tools/calibrate.mjs plan --n 10 --seed <n>\`)`
+    : calib.pipelineVersion !== cfg.pipelineVersion
+      ? `**stale** — measured on ${calib.pipelineVersion}, this run is ${cfg.pipelineVersion}. Re-calibrate before trusting any recall claim.`
+      : calib.calibrated
+        ? `calibrated for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} planted bugs (small sample; an upper bound)`
+        : `**inconclusive** for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} bugs${calib.zeroRecallClasses?.length ? `, no detection for ${calib.zeroRecallClasses.join(", ")}` : ""}`;
+
+  const required = cfg.independence?.requireFor ?? ["G7", "G9", "G12"];
+  const builderFamily = cfg.independence?.builderFamily ?? "unknown";
+  const last = new Map(entries.map((e) => [e.gate, e]));
+  const judged = required.filter((g) => last.has(g) && last.get(g).status !== "NOT_VERIFIED");
+  const noModel = judged.filter((g) => !last.get(g).modelFamily);
+  const sameFamily = judged.filter((g) => {
+    const e = last.get(g);
+    if (!e?.modelFamily) return false;
+    const f = familyOf(e.modelFamily);
+    return builderFamily !== "unknown" && f === builderFamily;
+  });
+  const independenceLine = sameFamily.length
+    ? `**FAIL** — ${sameFamily.join(", ")} were verified inside the builder's own family (${builderFamily})`
+    : noModel.length
+      ? `**NOT_VERIFIED** — ${noModel.join(", ")} recorded no verifier model, so independence is unproven`
+      : builderFamily === "unknown"
+        ? "unproven — set independence.builderFamily so the pipeline can judge it"
+        : judged.length
+          ? `every judged gate (${judged.join(", ")}) was verified by a model outside ${builderFamily}`
+          : "no gate was judged: nothing recorded a verifier model";
+
+  // metrics.json is either computed from evidence or hand-written. Say which: a report that
+  // quotes hand-written numbers without saying so is the failure mode P5 exists to remove.
+  let metricsLine;
+  try {
+    const m = readJson(abs(path.join(cfg.evalDir, "metrics.json")));
+    if (m.computed === true && m.derivedFrom) {
+      metricsLine = `computed from ${Object.keys(m.derivedFrom).join(", ")}${m.at ? ` at ${m.at}` : ""}`;
+    } else {
+      metricsLine = "**hand-written** (`computed: false`) — these numbers are not derived from the ledger. Run `pipeline gate G12 --builtin metrics`.";
+    }
+  } catch {
+    metricsLine = "**absent** — `pipeline gate G12 --builtin metrics` writes it from the ledger, progress and findings";
+  }
+
+  const body = [
+    "# Final report",
+    "",
+    `Generated ${new Date().toISOString()} by \`pipeline report\` (also regenerated automatically when phase 10, 11 or 12 completes) from ${cfg.progress} and ${cfg.ledger}.`,
+    "",
+    `- commit: \`${commitSha() ?? "unknown"}\``,
+    `- pipeline version: ${progress.pipelineVersion ?? cfg.pipelineVersion}`,
+    `- phase: ${progress.phase ?? "none"}`,
+    `- spec: ${specLine}`,
+    `- diff base: \`${progress.baseCommit ?? "unset (protected-paths cannot see committed edits)"}\``,
+    `- ledger: ${ledger.count} entries, chain ${ledger.ok ? "intact" : "**BROKEN**"}${ledger.ok ? "" : ` (${ledger.error})`}`,
+    "",
+    "## Gates",
+    "",
+    "Every row below is a command this pipeline ran itself. Re-run them all with `pipeline verify`.",
+    "",
+    "| Gate | Status | Exit | Command / evidence | Recorded |",
+    "|---|---|---|---|---|",
+    ...gateRows,
+    "",
+    "## Not verified",
+    "",
+    notVerified.length
+      ? [
+          "These were **not** evaluated. They are not green.",
+          "",
+          "| Gate | Reason | Command a human must run |",
+          "|---|---|---|",
+          ...notVerified.map(([id, g]) => `| ${id} | ${g.reason ?? "—"} | \`${g.humanCommand ?? "—"}\` |`),
+        ].join("\n")
+      : "None recorded. Confirm this is true and not merely unexamined.",
+    "",
+    "## Red team",
+    "",
+    `- FULL rounds: ${progress.rounds?.full ?? 0} · DIFF rounds: ${progress.rounds?.diff ?? 0}`,
+    estimate
+      ? `- capture–recapture: ${estimate.ok ? `estimated total ${Number(estimate.total).toFixed(2)}, expected remaining ${Number(estimate.remaining).toFixed(2)}` : `no estimate (${estimate.reason})`}`
+      : "- capture–recapture: not recorded (`pipeline estimate --a … --b … --m … --write`)",
+    `- metrics: ${metricsLine}`,
+    `- calibration: ${calibrationLine}`,
+    `- verifier independence: ${independenceLine}`, 
+    "",
+    "## Blockers",
+    "",
+    progress.blockers?.length ? progress.blockers.map((b) => `- **${b.id}** (phase ${b.phase}): ${b.text}\n  - fallback taken: ${b.fallback}`).join("\n") : "None.",
+    "",
+    "## What this report must not say",
+    "",
+    '- Never "no vulnerabilities". State what was tested, how many rounds were FULL, and what remains unverified.',
+    "- A DIFF round does not count toward the stop rule.",
+    `- ${entries.filter((e) => !e.modelFamily).length} of ${entries.length} ledger entries record no verifier model family.`,
+    "",
+  ].join("\n");
+
+  ensureDir(path.dirname(abs(cfg.finalReport)));
+  fs.writeFileSync(abs(cfg.finalReport), body);
+  ok(`wrote ${cfg.finalReport}`);
+  console.log(`gate rows: ${GATE_IDS.length}, NOT_VERIFIED: ${notVerified.length}, blockers: ${progress.blockers?.length ?? 0}`);
+}
+
 switch (command) {
   case "init": {
     const dirs = [
@@ -749,6 +907,7 @@ switch (command) {
     }
     progress.phases[id] = { ...progress.phases[id], status: "done", at: new Date().toISOString() };
     progress.phase = nextPhase(id) ?? id;
+    recordRound(progress, id);
     writeProgress(progress);
     appendLedger(
       abs(cfg.ledger),
@@ -766,6 +925,11 @@ switch (command) {
       { cwd: projectRoot },
     );
     ok(`phase ${id} done.${nextPhase(id) ? ` Next: ${nextPhase(id)}` : ""}`);
+    // A report that still describes yesterday's gates is worse than no report: regenerate it
+    // as the release phases complete (REVIEW-OF-SECOND-OPINION.md §7 P5).
+    if (["10", "11", "12"].includes(String(id))) {
+      writeReport();
+    }
     break;
   }
 
@@ -816,122 +980,7 @@ switch (command) {
   }
 
   case "report": {
-    const progress = readProgress();
-    const ledger = verifyLedger(abs(cfg.ledger));
-    let entries = [];
-    try {
-      entries = readLedger(abs(cfg.ledger));
-    } catch (error) {
-      warn(`ledger unreadable, report will treat it as empty: ${error.message}`);
-    }
-    const specFileAbs = abs(cfg.spec);
-    const hashFileAbs = abs(cfg.specHash);
-    const specProblemReport = specDrift();
-    const specLine = !fs.existsSync(hashFileAbs)
-      ? "**not frozen** — `pipeline freeze` has not run"
-      : specProblemReport
-        ? `**DRIFT** — ${specProblemReport}`
-        : `frozen at ${fs.readFileSync(hashFileAbs, "utf8").trim().split(/\s+/)[0].slice(0, 12)}…`;
-    const gateRows = GATE_IDS.map((id) => {
-      const g = progress.gates[id];
-      if (!g) return `| ${id} | not evaluated | — | — | — |`;
-      const status = g.status === "passed" ? "passed" : g.status === "failed" ? "**failed**" : "NOT_VERIFIED";
-      const cmd = g.command ? `\`${g.command.replace(/\|/g, "\\|")}\`` : g.evidence ? `evidence: ${g.evidence.join(", ")}` : "explicit approval";
-      return `| ${id} | ${status} | ${g.exitCode ?? "—"} | ${cmd} | ${g.at ?? "—"} |`;
-    });
-    const notVerified = Object.entries(progress.gates).filter(([, g]) => g.status === "NOT_VERIFIED");
-    const estimateFile = abs(path.join(cfg.evalDir, "estimate.json"));
-    const estimate = fs.existsSync(estimateFile) ? readJson(estimateFile) : null;
-
-    // Calibration and independence are the two claims a reader is most likely to over-read.
-    const calibFile = path.join(cfg.calibrationDir, "calibration.json");
-    const calib = fs.existsSync(abs(calibFile)) ? readJson(abs(calibFile)) : null;
-    const calibrationLine = !calib
-      ? `**not run** for ${cfg.pipelineVersion} — a zero-finding round is not evidence of a clean codebase (\`node pipeline/tools/calibrate.mjs plan --n 10 --seed <n>\`)`
-      : calib.pipelineVersion !== cfg.pipelineVersion
-        ? `**stale** — measured on ${calib.pipelineVersion}, this run is ${cfg.pipelineVersion}. Re-calibrate before trusting any recall claim.`
-        : calib.calibrated
-          ? `calibrated for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} planted bugs (small sample; an upper bound)`
-          : `**inconclusive** for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} bugs${calib.zeroRecallClasses?.length ? `, no detection for ${calib.zeroRecallClasses.join(", ")}` : ""}`;
-
-    const required = cfg.independence?.requireFor ?? ["G7", "G9", "G12"];
-    const builderFamily = cfg.independence?.builderFamily ?? "unknown";
-    const last = new Map(entries.map((e) => [e.gate, e]));
-    const judged = required.filter((g) => last.has(g) && last.get(g).status !== "NOT_VERIFIED");
-    const noModel = judged.filter((g) => !last.get(g).modelFamily);
-    const sameFamily = judged.filter((g) => {
-      const e = last.get(g);
-      if (!e?.modelFamily) return false;
-      const f = familyOf(e.modelFamily);
-      return builderFamily !== "unknown" && f === builderFamily;
-    });
-    const independenceLine = sameFamily.length
-      ? `**FAIL** — ${sameFamily.join(", ")} were verified inside the builder's own family (${builderFamily})`
-      : noModel.length
-        ? `**NOT_VERIFIED** — ${noModel.join(", ")} recorded no verifier model, so independence is unproven`
-        : builderFamily === "unknown"
-          ? "unproven — set independence.builderFamily so the pipeline can judge it"
-          : judged.length
-            ? `every judged gate (${judged.join(", ")}) was verified by a model outside ${builderFamily}`
-            : "no gate was judged: nothing recorded a verifier model";
-
-    const body = [
-      "# Final report",
-      "",
-      `Generated ${new Date().toISOString()} by \`pipeline report\` from ${cfg.progress} and ${cfg.ledger}.`,
-      "",
-      `- commit: \`${commitSha() ?? "unknown"}\``,
-      `- pipeline version: ${progress.pipelineVersion ?? cfg.pipelineVersion}`,
-      `- phase: ${progress.phase ?? "none"}`,
-      `- spec: ${specLine}`,
-      `- diff base: \`${progress.baseCommit ?? "unset (protected-paths cannot see committed edits)"}\``,
-      `- ledger: ${ledger.count} entries, chain ${ledger.ok ? "intact" : "**BROKEN**"}${ledger.ok ? "" : ` (${ledger.error})`}`,
-      "",
-      "## Gates",
-      "",
-      "Every row below is a command this pipeline ran itself. Re-run them all with `pipeline verify`.",
-      "",
-      "| Gate | Status | Exit | Command / evidence | Recorded |",
-      "|---|---|---|---|---|",
-      ...gateRows,
-      "",
-      "## Not verified",
-      "",
-      notVerified.length
-        ? [
-            "These were **not** evaluated. They are not green.",
-            "",
-            "| Gate | Reason | Command a human must run |",
-            "|---|---|---|",
-            ...notVerified.map(([id, g]) => `| ${id} | ${g.reason ?? "—"} | \`${g.humanCommand ?? "—"}\` |`),
-          ].join("\n")
-        : "None recorded. Confirm this is true and not merely unexamined.",
-      "",
-      "## Red team",
-      "",
-      `- FULL rounds: ${progress.rounds?.full ?? 0} · DIFF rounds: ${progress.rounds?.diff ?? 0}`,
-      estimate
-        ? `- capture–recapture: ${estimate.ok ? `estimated total ${Number(estimate.total).toFixed(2)}, expected remaining ${Number(estimate.remaining).toFixed(2)}` : `no estimate (${estimate.reason})`}`
-        : "- capture–recapture: not recorded (`pipeline estimate --a … --b … --m … --write`)",
-      `- calibration: ${calibrationLine}`,
-      `- verifier independence: ${independenceLine}`, 
-      "",
-      "## Blockers",
-      "",
-      progress.blockers?.length ? progress.blockers.map((b) => `- **${b.id}** (phase ${b.phase}): ${b.text}\n  - fallback taken: ${b.fallback}`).join("\n") : "None.",
-      "",
-      "## What this report must not say",
-      "",
-      '- Never "no vulnerabilities". State what was tested, how many rounds were FULL, and what remains unverified.',
-      "- A DIFF round does not count toward the stop rule.",
-      `- ${entries.filter((e) => !e.modelFamily).length} of ${entries.length} ledger entries record no verifier model family.`,
-      "",
-    ].join("\n");
-
-    ensureDir(path.dirname(abs(cfg.finalReport)));
-    fs.writeFileSync(abs(cfg.finalReport), body);
-    ok(`wrote ${cfg.finalReport}`);
-    console.log(`gate rows: ${GATE_IDS.length}, NOT_VERIFIED: ${notVerified.length}, blockers: ${progress.blockers?.length ?? 0}`);
+    writeReport();
     break;
   }
 

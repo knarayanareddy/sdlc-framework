@@ -113,3 +113,35 @@ test("the default tripwire trace check carries no exemption either", () => {
   assert.ok(line, "no default trace check found");
   assert.doesNotMatch(line, /--allow-uncovered/);
 });
+
+// ---- P4 · a scoped trace run is tag hygiene, not a coverage claim ----------------------
+test("a scoped run says it is scoped and does not pretend to cover the suite", () => {
+  const dir = project({ tests: { "tests/a.test.mjs": GOOD_TEST(["REQ-001"]) } });
+  const r = run(dir, ["docs/02-spec/SPEC.md", "tests", "--scope", "tests"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /SCOPED \(under tests\)/);
+  assert.match(r.stdout, /RESULT: PASS \(scoped to under tests; tag hygiene only, not a coverage claim\)/);
+  // The uncovered list is still printed (it is information), but the verdict is not a pass
+  // on coverage: a bare "RESULT: PASS" would let a scoped run stand in for trace:check.
+  assert.doesNotMatch(r.stdout, /^RESULT: PASS$/m);
+});
+
+test("a scope that reads no test files is NOT_VERIFIED", () => {
+  const dir = project({ tests: { "tests/a.test.mjs": GOOD_TEST(["REQ-001"]) } });
+  const r = run(dir, ["docs/02-spec/SPEC.md", "tests", "--scope", "src/nope"]);
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /the scope \(under src\/nope\) contains no test files/);
+});
+
+test("--changed-since selects the changed test files", () => {
+  const dir = project({ tests: { "tests/a.test.mjs": GOOD_TEST(["REQ-001"]), "tests/b.test.mjs": GOOD_TEST(["REQ-002"]) } });
+  const git = (...args) => spawnSync("git", ["-c", "user.email=t@e.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  fs.writeFileSync(path.join(dir, "tests/b.test.mjs"), GOOD_TEST(["REQ-001", "REQ-002"]));
+  const r = run(dir, ["docs/02-spec/SPEC.md", "tests", "--changed-since", "HEAD"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /test files: 1/);
+  assert.match(r.stdout, /SCOPED \(changed since HEAD \(1 file\)\)/);
+});

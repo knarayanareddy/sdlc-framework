@@ -578,3 +578,134 @@ no `--allow-uncovered`); `demo.mjs` → PASS 00→12, whose G5 runs
 ride on another's test — per-`test()` tags would close that and change the spec language. Byte
 thresholds for glob matches were not in this pass. And `trace:structure`/`trace:freeze` still take the
 flag, which remains the only place a "green" means structure rather than coverage — it says so now.
+
+## 15 · P4 and P5 landed — the plan must agree with itself, and the numbers must come from somewhere (2026-11-26)
+
+Version `2.5.0 → 2.6.0`. Both phases were approved together and are committed together: P4's
+`plan-check` runs inside G4, and P5's `metrics` gate is what G12 now means, so shipping one
+without the other would leave a gate row that describes work the other had not done yet.
+
+### P4 · `plan-check.mjs` — the plan contradicts itself, before a line of code exists
+
+Reproduced at `5fcc34c` against the framework's own worked example. The example's spec lists
+three routes, and its authorization matrix described roles in prose but named **no route at
+all**; `REQ-003` (mark an item read) and `NFR-001` (`GET /api/items` p95) had been added to the
+spec during P3 with no slice log to deliver them. Nothing noticed, because G4 was
+`--evidence threat-model.md,authz-matrix.md` — a file-exists check. The new tool, run on those
+same documents:
+
+```
+  ok   threat  1/1 SEC ids modelled
+  FAIL authz   not in docs/04-architecture/authz-matrix.md: GET /api/items, POST /api/items
+  FAIL slices  no slice delivers: REQ-003, NFR-001
+RESULT: FAIL
+```
+
+The route list is not read from the matrix or the spec's prose: it comes from
+`entrypoints.json`, which `entrypoints.mjs` enumerates from the **source**. A plan cannot pass
+by describing routes the code does not have, and a route the code does have cannot hide by
+being absent from the matrix. When no `entrypoints.json` exists yet (it is first written in
+phase 08), the fallback is the spec's `| METHOD | path |` table, and the run says which source
+it used.
+
+| Check | Question | Fails when |
+|---|---|---|
+| `threat` | is every `SEC-*` in the spec modelled? | an id in `SPEC.md` has no `SEC-*` line in `threat-model.md` |
+| `authz` | is every exposed route/action authorized? | a `route:*`/`action:*` from `entrypoints.json` (or the spec table) is absent from `authz-matrix.md` |
+| `slices` | does every id get delivered, once, by some slice? | a `REQ-*`/`SEC-*`/`NFR-*` appears in no `slice-*.md`, or a slice log names no id at all |
+
+Wiring: `--builtin plan` at **G4** (`threat,authz` by default), and `phase done 06` now runs
+`plan:slices` — slice logs do not exist at G4, so requiring them there would have been a gate
+that can only be passed by faking a file. Slices are `NOT_REQUIRED` until phase 06, and the
+`--require` flag is how you ask for them earlier (the demo does).
+
+**The example was repaired, not excused.** G4 could have kept a narrow default and left the
+contradiction in place. Instead `docs/04-architecture/authz-matrix.md` gained a `Route` column
+with all four routes (the three API routes plus the page), a second slice log
+(`docs/06-build/slice-02.md`) delivers `REQ-003` and `NFR-001`, and `SPEC.md`'s slice table has
+the matching row. `plan-check --require threat,authz,slices` on the example: `1/1 SEC ids
+modelled`, `2/2 routes covered`, `5/5 ids delivered across 2 slice(s)` → `RESULT: PASS`. The
+default remains the weaker `threat,authz`, because that is what is knowable at G4.
+
+**Brownfield scope.** `entrypoints.mjs`, `coverage-gate.mjs` and `trace-check-v2.mjs` take
+`--scope <path>[,<path>]` or `--changed-since <ref>` (the scope prefixes intersected with
+`git diff --name-only <ref>`). Every scoped run announces itself —
+`SCOPED (<src/lib>): this run covers part of the project, not all of it` — `entrypoints` adds
+`scoped` to its JSON, and the trace verdict becomes
+`RESULT: PASS (scoped to src/lib; tag hygiene only, not a coverage claim)`, never a bare
+`RESULT: PASS`. A scope that selects no files exits 3 at all three tools: an empty run is not
+a clean one, which is the same trap as "zero entry points" from P1.
+
+### P5 · the numbers, the rounds, and the report
+
+Three separate claims had nothing behind them.
+
+1. **`docs/12-eval/metrics.json` was prose.** The shipped example said "a real run fills this
+   from the gate ledger, not by hand" — nothing filled anything. G12 ran
+   `expect-files.mjs docs/12-eval/metrics.json`, so at `5fcc34c` this file:
+
+   ```json
+   {"pipelineVersion":"2.5.0","note":"numbers by hand — gates: 99"}
+   ```
+
+   produced `RESULT: PASS` and `G12 PASSED` (reproduced in a fresh project, same command).
+   `metrics-compute.mjs` now derives the file from the ledger, `progress.json`, the spec and the
+   findings: the **last ledger row per gate wins** (a gate re-run to green is not still
+   NOT_VERIFIED), requirements are counted from the spec's headings, tiers from the findings,
+   and every source is named with its sha256 under `derivedFrom`. `computed: true` is written
+   only by the tool; a hand-written file must say `computed: false`, and `metrics.schema.json`
+   requires `derivedFrom` whenever `computed` is true. No ledger ⇒ exit 3: metrics without
+   evidence are a story.
+2. **`progress.rounds` was a literal zero.** At `5fcc34c` the only occurrences were
+   `rounds: { full: 0, diff: 0 }` in `init` and two reads (status, report). The stop rule
+   ("at most 3 FULL rounds") could therefore never fire, and every report said `FULL rounds: 0`
+   no matter how many rounds ran. A round is now a fact about an artifact: `phase done 08/09`
+   reads the findings file's `mode`, records `{phase, mode, at}` in `progress.roundLog`, and
+   derives `rounds` from that list (a re-run of the same phase replaces its entry rather than
+   double counting). `validate-progress` fails when `rounds` disagrees with `roundLog`, or when
+   a log entry sits on a phase that cannot host a round. The demo now reports
+   `FULL rounds: 2`, which is what it actually runs.
+3. **`FINAL-REPORT.md` was only as fresh as the last time someone typed `report`.** It is now
+   rewritten when phases 10, 11 and 12 complete, and it states the provenance of the metrics
+   line: `computed from ledger, progress, spec, findings at …`, or
+   `**hand-written** (computed: false) — these numbers are not derived from the ledger`, or
+   `**absent**`. A report that quotes made-up numbers now says so.
+
+**The schemas and the validators disagreed, and `schemas.test.mjs` found it.** The test runs one
+document through the schema (`pipeline/tools/lib/jsonschema.mjs`, a ~90-line subset that throws
+on any keyword it does not implement) and through the real validator, and fails when the two
+verdicts differ. First run, on rules the schemas claimed to encode:
+
+- `findings.schema.json` had no rule at all for T1/T2/T3, so `T2` with no `failureRate`,
+  `T2` with 3 iterations, and `T1` with no test file were all schema-valid while
+  `validate-findings` rejected them. Fixed: three `if/then` branches requiring `test` (T1),
+  `failureRate` in `(0,1]` + `iterations ≥ 20` (T2), and `controlsChecked ≥ 3` +
+  `verifiers ≥ 2` (T3).
+- Every existing `if` in that schema was **vacuously true**: `{"if": {"properties": {"status":
+  {"const": "confirmed"}}}}` matches any object that does not have a `status`, so the `then`
+  applied to every finding. Each condition now carries `required`. This bug had been invisible
+  because nothing validated a document against the schema.
+- `coverage-ledger.schema.json` required `run`, `mode` and a status enum that
+  `coverage-gate.mjs` never checked; a ledger missing `mode` was read as "no units examined".
+  The gate now enforces the same shape rules, so a ledger that is not a ledger fails rather
+  than passing as empty.
+
+One misalignment is **documented instead of fixed**: "`rounds` equals the counts derived from
+`roundLog`" is arithmetic, and JSON Schema cannot count. The test asserts the validator rejects
+it and that the schema accepts it, with the note to delete the exception if the schema ever
+gains a way to express it.
+
+**Verified.** `node --test pipeline/tools/*.test.mjs` → **216 tests, 0 failing** (was 179);
+new or extended files: `plan-check.test.mjs` (9), `metrics-compute.test.mjs` (6),
+`schemas.test.mjs` (6), `rounds.test.mjs` (6), `pipeline.test.mjs` (+3: G12 recomputes over a
+hand-written file, phase 12 replaces a stale report, phase 08 records its round),
+`coverage-gate.test.mjs` (+2 scoped), `trace-check.test.mjs` (+3 scoped), `entrypoints.test.mjs`
+(+2 scoped). `run-selftests.mjs` → 22 files + trace selftest, 2/2 groups. `demo.mjs` → PASS
+00→12 with `gate G4 --builtin plan` → `RESULT: PASS — threat model, authorization matrix and
+slices agree with the spec`, G12 computing metrics, and `FULL rounds: 2`.
+
+**Still open.** P6 is untouched and still needs you: a model family that is not the builder's,
+a Docker-capable runner, `nuclei` + `schemathesis`, and a blind calibration run. `metrics-compute`
+reports calibration from `calibration/calibration.json` and marks it `stale` when it was measured
+on another pipeline version — this bump to 2.6.0 therefore invalidates any earlier calibration,
+which is the intended behaviour, not an oversight.

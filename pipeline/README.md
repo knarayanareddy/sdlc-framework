@@ -13,7 +13,7 @@ v1 was prose plus one regex tool. **v2 ships the missing mechanisms as programs*
 its own test. Nothing below needs a model until a prompt tells you to dispatch one.
 
 ```bash
-node pipeline/tools/run-selftests.mjs      # 18 test files + 1 selftest script: no tool is trusted before its own test
+node pipeline/tools/run-selftests.mjs      # 22 test files + 1 selftest script: no tool is trusted before its own test
 node pipeline/tools/gate-ledger.mjs demo   # the G0 tamper test
 node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
 
@@ -43,7 +43,14 @@ node pipeline/bin/pipeline.mjs report
 | `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings; a run in which every case was skipped (missing credentials) is `NOT_VERIFIED`, not `CLEAN` |
 | `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei, junit and fuzz output into one lead shape; a scan counts as `ran` only when it produced a parseable artifact — otherwise the run is `NOT_VERIFIED`, exit 3 |
 | `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, matching **without replacement**, `file:line[:col]` and `line-range` locations, whole-path comparison, and a pass mark derived from the sample (below 5 planted bugs nothing can be calibrated); `report` has to print the verdict |
+| `tools/plan-check.mjs` | R-04 | the plan must agree with itself **before** a line is written: every `SEC-*` id has a threat-model entry, every enumerated route/action appears in the authorization matrix, and every `REQ-*`/`SEC-*`/`NFR-*` is delivered by some slice — with no slice that names no id. Slices are `NOT_REQUIRED` until the build produces them |
+| `tools/metrics-compute.mjs` | — | `docs/12-eval/metrics.json` is **computed** from the ledger, progress, spec and findings, and names each source with its sha256; a hand-written file must say `computed: false`. No ledger ⇒ exit 3, because metrics without evidence are a story |
 | `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
+
+Every gate tool above also accepts `--scope <path>` (or `--changed-since <ref>`) and then says
+so: `SCOPED (<label>): this run covers part of the project, not all of it`, and the verdict is
+`PASS (scoped to …; tag hygiene only, not a coverage claim)`. A scope that selects no files is
+exit 3 — an empty run is not a clean one.
 
 Four layers used to be "specified, not built". They are built and tested now; what remains is
 the part that needs a credential, a container runtime or a scanner binary, and

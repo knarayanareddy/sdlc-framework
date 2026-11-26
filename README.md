@@ -4,7 +4,7 @@
 
 A comprehensive prompt and verification framework designed for LLMs, autonomous coding agents, and engineers.
 
-**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Twenty zero-dependency tools, eighteen of them self-tested, plus a worked example that walks every phase.
+**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Twenty-two zero-dependency tools — nineteen have a test that names them, and the remaining three (`demo`, `expect-files`, `run-selftests`) are exercised by the demo and by CI — plus a worked example that walks every phase.
 
 Three things worth knowing before you trust a green run:
 
@@ -65,12 +65,15 @@ result, not an opinion.
 
 - **`pipeline/`** — the framework and the v2 tooling
   - **`bin/pipeline.mjs`**: the orchestrator CLI — state machine, gate runner, hash-chained ledger, report
-  - **`tools/`**: twenty zero-dependency tools, eighteen with a `*.test.mjs` beside them:
+  - **`tools/`**: twenty-two zero-dependency tools across 22 `*.test.mjs` files (`demo`, `expect-files` and `run-selftests` are covered by the demo and CI rather than by a test of their own):
     `trace-check-v2`, `gate-ledger`, `entrypoints`, `coverage-gate`, `quote-verify`,
     `validate-findings`, `validate-progress`, `protected-paths`, `tripwire`, `estimate`,
     `sandbox`, `dast`, `fuzz-api`, `verifier-route`, `independence`, `calibrate`, `families`,
-    `leads`, `bug-classes`, plus `expect-files`, `run-selftests` and the end-to-end `demo`
-  - **`schemas/`**: JSON schemas for `progress.json`, `findings.json`, `coverage-ledger.json`
+    `leads`, `bug-classes`, `plan-check`, `metrics-compute`, plus `expect-files`,
+    `run-selftests` and the end-to-end `demo`
+  - **`schemas/`**: JSON schemas for `progress.json`, `findings.json`, `coverage-ledger.json`,
+    `verdicts.json`, `metrics.json`, plus `schemas.test.mjs`, which runs the same document
+    through each schema and its validator and fails when the two disagree
   - **`examples/mini-app/`**: a three-requirement worked example the demo runs end to end
   - **`RUNBOOK.md`**: every command needed to run a real project
   - **`prompts/`**: one prompt per phase

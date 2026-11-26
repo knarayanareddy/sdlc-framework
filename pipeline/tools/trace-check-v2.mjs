@@ -24,6 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { assertScopeResolved, printScope, resolveScope } from "./lib/scope.mjs";
 
 const argv = process.argv.slice(2);
 const flagValue = (name) => {
@@ -103,7 +104,15 @@ const SKIP = /\b(it|test|describe)\.(skip|todo|fixme|fails)\b|\b(xit|xtest|xdesc
 const CASES = /\b(it|test)(?:\.\w+)?\s*\(/g;
 const TAG_LINE = /^[ \t]*(?:\/\/|\/\*+|\*)[ \t]*@req[ \t]+((?:(?:REQ|SEC|NFR)-\d+[\s,]*)+)/gm;
 
-const files = walk(testsDir).map((f) => {
+// Brownfield: --changed-since / --scope restrict which test files are read. A scoped run
+// checks tag hygiene in the files that changed; it cannot claim coverage of the spec, because
+// it did not read the suite.
+const scope = resolveScope({ scope: flagValue("--scope"), changedSince: flagValue("--changed-since"), cwd: process.cwd() });
+assertScopeResolved(scope, `node pipeline/tools/trace-check-v2.mjs ${specPath} ${testsDir}   # or drop the scope flags`);
+
+const files = walk(testsDir)
+  .filter((f) => !scope || scope.matches(path.relative(process.cwd(), f).split(path.sep).join("/")))
+  .map((f) => {
   const text = fs.readFileSync(f, "utf8");
   const rawAsserts = (text.match(ASSERT) ?? []).length;
   const tautologies = (text.match(TAUTOLOGY) ?? []).length;
@@ -117,6 +126,13 @@ const files = walk(testsDir).map((f) => {
     tags: [...text.matchAll(TAG_LINE)].flatMap((m) => m[1].match(/(?:REQ|SEC|NFR)-\d+/g) ?? []),
   };
 });
+
+if (scope && files.length === 0) {
+  // A scope that read no test files proves nothing about tag hygiene either.
+  console.log(`NOT_VERIFIED: the scope (${scope.label}) contains no test files`);
+  console.log(`human command: node pipeline/tools/trace-check-v2.mjs ${specPath} ${testsDir} --changed-since <ref>   # or drop the scope flags`);
+  process.exit(3);
+}
 
 const covered = new Map();
 for (const f of files) {
@@ -177,7 +193,11 @@ if (checkBaseline) {
   }
 }
 
-const fail = problems.length > 0 || (!allowUncovered && uncovered.length > 0);
+// A scoped run is not a coverage claim either: say so instead of failing on everything it
+// did not read.
+const coverageClaim = !allowUncovered && !scope;
+const fail = problems.length > 0 || (coverageClaim && uncovered.length > 0);
+printScope(scope);
 
 if (asJson) {
   console.log(
@@ -188,8 +208,9 @@ if (asJson) {
         uncovered,
         files: files.length,
         structureOnly: allowUncovered,
+        ...(scope ? { scoped: scope.label } : {}),
         problems,
-        result: fail ? "FAIL" : allowUncovered ? "PASS (structure only)" : "PASS",
+        result: fail ? "FAIL" : allowUncovered ? "PASS (structure only)" : scope ? "PASS (scoped)" : "PASS",
       },
       null,
       2,
@@ -202,7 +223,15 @@ if (asJson) {
   console.log(`requirements: ${reqs.length}  covered: ${reqs.length - uncovered.length}  uncovered: ${uncovered.length}  test files: ${files.length}`);
   if (uncovered.length) console.log(`uncovered: ${uncovered.join(", ")}`);
   for (const p of problems) console.log(`PROBLEM ${p}`);
-  console.log(fail ? "RESULT: FAIL" : allowUncovered ? "RESULT: PASS (structure only; not a coverage claim)" : "RESULT: PASS");
+  console.log(
+    fail
+      ? "RESULT: FAIL"
+      : allowUncovered
+        ? "RESULT: PASS (structure only; not a coverage claim)"
+        : scope
+          ? `RESULT: PASS (scoped to ${scope.label}; tag hygiene only, not a coverage claim)`
+          : "RESULT: PASS",
+  );
 }
 
 process.exit(fail ? 1 : 0);

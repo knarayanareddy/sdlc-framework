@@ -16,6 +16,12 @@ ROLE: process analyst. You measure the pipeline. You do not defend it.
 
 ## Part 1 · Metrics (`metrics.json`), raw counts only
 
+`gate G12 --builtin metrics` **writes** `docs/12-eval/metrics.json` by running
+`tools/metrics-compute.mjs` over the ledger, `docs/progress.json`, the spec and the findings
+(`computed: true`, every source named with its sha256). Do not hand-edit the counts: re-run the
+gate. Anything you measured that the tool cannot derive goes in the narrative, next to — not
+inside — the computed numbers.
+
 From the ledger and artifacts, not from memory:
 
 - Time and tool calls per phase; repair loops used; blockers opened.

@@ -55,10 +55,10 @@ node pipeline/bin/pipeline.mjs phase done 01
 | 02 spec | G2 | `gate G2 --builtin trace:structure` |
 | H1 digest | — | `phase done H1` (needs `docs/02-spec/DECISIONS.md`) |
 | 03 design | G3 | `gate G3 --evidence docs/03-design/design-brief.md,docs/03-design/tokens.json` |
-| 04 architecture | G4 | `gate G4 --evidence docs/04-architecture/threat-model.md,…` |
+| 04 architecture | G4 | `gate G4 --builtin plan` (threat model + authz matrix must agree with the spec) |
 | FZ freeze | — | `phase done FZ` (hashes `SPEC.md`) |
 | 05 tests | G5 | `gate G5 --builtin trace:freeze,trace:check,unit` |
-| 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` |
+| 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` (checks `plan:slices`: every id is delivered) |
 | 07 QA | G7 | `gate G7 --builtin types,lint,unit,build` |
 | 08 red team | G8 | `gate G8 --builtin entrypoints,coverage,findings` |
 | 09 patch | G9 | `gate G9 --builtin findings,coverage` |
@@ -135,8 +135,30 @@ node pipeline/bin/pipeline.mjs estimate --a 6 --b 5 --m 4 --write
 node pipeline/bin/pipeline.mjs report
 ```
 
-`report` writes `docs/FINAL-REPORT.md` from the ledger, including the NOT_VERIFIED list and
-the calibration caveat. Fill in the narrative; do not edit the gate table.
+`report` writes `docs/FINAL-REPORT.md` from the ledger, including the NOT_VERIFIED list, the
+round labels, the metrics provenance line and the calibration caveat. It is also re-written
+automatically when phases 10, 11 and 12 complete, so the staged report cannot describe an older
+ledger than the one on disk. Fill in the narrative; do not edit the gate table.
+
+`docs/12-eval/metrics.json` is **computed**, not written by hand: `gate G12 --builtin metrics`
+runs `tools/metrics-compute.mjs`, which reads the ledger, `docs/progress.json`, the spec and the
+findings, and records each source with its sha256 under `derivedFrom`. A file you write yourself
+must say `computed: false`, and the report will label it hand-written.
+
+### 6.1 · Brownfield: run the gates on what you changed
+
+`entrypoints`, `coverage`, `trace:check` and `plan` accept a scope:
+
+```bash
+node pipeline/tools/entrypoints.mjs --scope src/app/api --out docs/08-redteam/run-1/entrypoints.json
+node pipeline/tools/coverage-gate.mjs --changed-since origin/main --ledger docs/08-redteam/run-1/coverage-ledger.json
+node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --scope src/lib
+```
+
+A scoped run prints `SCOPED (<label>): this run covers part of the project, not all of it` and
+its verdict is never a bare PASS (`PASS (scoped to …; tag hygiene only, not a coverage claim)`).
+A scope that selects no files exits 3. Do not record a scoped run as G7/G8's only evidence for a
+release: it covers part of the project by construction.
 
 ## 7 · The worked example
 

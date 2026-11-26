@@ -138,6 +138,7 @@ strings) or title. Health endpoint returns `{ok}` only.
 |---|---|---|---|
 | 0 (walking skeleton) | session, one item end to end, health | add a link, see it in the list | e2e green on a production build |
 | 1 | REQ-001, REQ-002, SEC-001 | two teams, cross-team request returns 404 | tests tagged to those ids pass |
+| 2 | REQ-003, NFR-001 | mark read twice, then list 10 000 items | one read row; p95 of the list response under budget |
 
 ## 14. Open questions (each with a default decision)
 
