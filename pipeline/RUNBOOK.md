@@ -105,6 +105,11 @@ Gates that use them:
 An exit code of **3** from any tool means "I could not evaluate this": the orchestrator records
 `NOT_VERIFIED` with the reason and the printed human command, never a pass.
 
+**G9 needs to know who wrote the code.** `independence.mjs` compares each recorded verifier's family
+with the builder's, so it refuses to answer (exit 3, NOT_VERIFIED) until `independence.builderFamily`
+is set — `pipeline init` derives it from `PIPELINE_BUILDER_MODEL` when that is exported, and warns
+when it cannot. There is no green until a human names the builder.
+
 ## 4 · When a defect will not die
 
 Three repair attempts, then a blocker with a fallback:

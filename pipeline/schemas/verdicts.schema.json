@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdlc-framework/pipeline/schemas/verdicts.schema.json",
+  "title": "docs/05-test/verifier-verdicts.json",
+  "description": "What a cross-family verifier must return for a verifier-route envelope. verifier-route.mjs (checkVerdict) is the executable version of this file: it also resolves every evidence citation against the excerpts the verifier was actually shown, which a JSON Schema cannot express.",
+  "type": "object",
+  "required": ["envelopeHash", "claims"],
+  "oneOf": [{ "required": ["model"] }, { "required": ["family"] }],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "envelopeHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The hash of the envelope this verdict answers. A mismatch means the verdict answers a different task."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The verifier's model id. Required unless `family` is given; one of the two is required so independence is judgeable."
+    },
+    "family": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The verifier's model family, if it does not want to disclose the exact model. Must differ from the author's family."
+    },
+    "verdict": {
+      "enum": ["confirmed", "corrected", "refuted", "insufficient"],
+      "description": "The overall verdict, when the answer is not broken down per claim. Per-claim answers take precedence."
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per claim in the envelope. A claim left unanswered invalidates the verdict.",
+      "items": {
+        "type": "object",
+        "required": ["id", "verdict"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^C[0-9]+$" },
+          "verdict": { "enum": ["confirmed", "corrected", "refuted", "insufficient"] },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Required for confirmed and refuted. Each entry is <path>:<line> (or <path>:<from>-<to>) naming a file and a line that appear in the envelope's excerpts.",
+            "items": { "type": "string", "pattern": "^[^:]+:L?[0-9]+([-–][0-9]+)?$" }
+          },
+          "note": { "type": "string" },
+          "missing": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required when verdict is insufficient: the single fact that would settle the claim."
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "verdict": { "enum": ["confirmed", "refuted"] } } },
+            "then": { "required": ["evidence"] }
+          },
+          {
+            "if": { "properties": { "verdict": { "const": "insufficient" } } },
+            "then": { "required": ["missing"] }
+          }
+        ]
+      }
+    },
+    "dispatchedAt": { "type": "string" }
+  }
+}

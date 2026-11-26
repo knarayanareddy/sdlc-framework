@@ -13,6 +13,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { appendLedger } from "./lib/ledger.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE = path.resolve(HERE, "..");
@@ -251,5 +252,40 @@ test("gate G3 suggests the real evidence command, not --builtin manual", () => {
   assert.match(res.stdout, /is an evidence gate/);
   assert.match(res.stdout, /gate G3 --evidence docs\/03-design\/design-brief\.md/);
   assert.doesNotMatch(res.stdout, /Suggested: --builtin manual/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// 13 · Independence cannot be recorded green against an unknown builder (F-02)
+// ---------------------------------------------------------------------------
+test("gate G9 is NOT_VERIFIED when independence.builderFamily is unknown", () => {
+  const dir = project("indep");
+  const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
+  // The tool used to say RESULT: PASS for "openai verified a unknown build", and the gate
+  // recorded that as green. There is nothing to be independent of until the builder is named.
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /G9 NOT_VERIFIED/);
+  const gate = progressOf(dir).gates.G9;
+  assert.equal(gate.status, "NOT_VERIFIED");
+  assert.equal(gate.exitCode, 3);
+  assert.ok(gate.reason && /no independent verifier/.test(gate.reason), gate.reason);
+  assert.match(String(gate.humanCommand), /--builder-family/, "the recorded human command must be runnable");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("with the builder declared, independence is judged and can pass", () => {
+  const dir = project("indep2");
+  const cfgFile = path.join(dir, "pipeline.config.json");
+  const cfg = readJson(cfgFile);
+  // A verifier from another family, recorded for the gate the tool requires.
+  cfg.independence = { ...(cfg.independence ?? {}), builderFamily: "anthropic", requireFor: ["G7"] };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  appendLedger(path.join(dir, "docs", "gate-ledger.jsonl"), {
+    phase: "07", gate: "G7", status: "passed", command: "true", exitCode: 0, commit: "abc1234", modelFamily: "gpt-5",
+  });
+  const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /G9 PASSED/);
+  assert.equal(progressOf(dir).gates.G9.status, "passed");
   fs.rmSync(dir, { recursive: true, force: true });
 });

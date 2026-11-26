@@ -9,7 +9,7 @@ Every claim below is a command you can run. Nothing in this file is aspirational
 
 | Layer | Built and tested | What only you can do |
 |---|---|---|
-| Cross-model verifier routing | `verifier-route.mjs`, `independence.mjs`, `lib/families.mjs`, transport example, 18 tests | supply one endpoint + key, set `independence.builderFamily` |
+| Cross-model verifier routing | `verifier-route.mjs`, `independence.mjs`, `lib/families.mjs`, transport example, 22 tests | supply one endpoint + key, set `independence.builderFamily` |
 | Sandbox profile | `sandbox.mjs` (run/check/profile/verify), 9 tests | install docker (or bwrap) and run the generated profile |
 | DAST / fuzz | `fuzz-api.mjs` (real fuzzer), `dast.mjs` (adapters + `leads` normaliser), 13 tests | install ZAP/nuclei/schemathesis, or use the built-in fuzzer only |
 | Planted-bug calibration | `calibrate.mjs` (plan/template/score/status), `lib/bug-classes.mjs`, 11 tests | run one plant on a throwaway branch with a second agent |
@@ -31,6 +31,8 @@ node pipeline/tools/verifier-route.mjs status          # families, author, routa
 node pipeline/tools/verifier-route.mjs route --phase 07 --gate G7 --author-model claude-sonnet-4 \
   --task "spec-to-code compliance" --claims claims.json --files docs/02-spec/SPEC.md --out env.json
 node pipeline/tools/verifier-route.mjs dispatch --envelope env.json --out verdicts.json
+# the envelope carries the excerpts; the prompt is line-numbered, so a verdict can cite path:line
+# and verifier-route checks that citation against what was sent (a file it did not send is rejected)
 node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pipeline.config.json
 ```
 
@@ -39,7 +41,10 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
   claims "confirmed" without a `file:line`.
 - The verifier family must differ from the author's. Unknown model → `family: unknown` → refused.
 - `independence.mjs` reads what the ledger *recorded* and returns PASS / FAIL (same family) /
-  NOT_VERIFIED (no model recorded). `pipeline gate G9 --builtin independence` runs it, and
+  NOT_VERIFIED (no model recorded, or **no known builder family**: with `builderFamily` left at
+  `unknown` nothing can be independent of it, so the answer is NOT_VERIFIED and exit 3).
+  Set `independence.builderFamily`, pass `--builder-family`, or export `PIPELINE_BUILDER_MODEL`
+  (`pipeline init` derives the family from it when it can, and warns when it cannot). `pipeline gate G9 --builtin independence` runs it, and
   exit 3 lands in the ledger as NOT_VERIFIED with the reason and a human command.
 - `pipeline report` prints the independence verdict in `FINAL-REPORT.md`.
 
@@ -303,7 +308,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# NOT_VERIFIED: calibration has not been run for pipeline 2.3.0
+# NOT_VERIFIED: calibration has not been run for pipeline 2.4.0
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.

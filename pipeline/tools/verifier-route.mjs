@@ -23,6 +23,12 @@ const [command = "status"] = positional;
 
 const VERDICTS = Object.freeze(["confirmed", "corrected", "refuted", "insufficient"]);
 const MAX_FILE_BYTES = 200_000;
+// What the verifier is shown is what the envelope hash binds. These caps keep an envelope
+// a document rather than an archive, and every omission is stated in the prompt.
+const MAX_TOTAL_BYTES = 600_000;
+const MAX_DIR_FILES = 60;
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "out", "coverage", ".venv", "__pycache__", ".turbo"]);
+const BINARY = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|woff2?|ttf|eot|mp4|mov|mp3|wav|wasm|so|node|class)$/i;
 
 const table = mergeFamilies(flags.families, (f) => readJson(f));
 const authorModel = flags["author-model"] ?? process.env.PIPELINE_BUILDER_MODEL ?? "";
@@ -55,13 +61,59 @@ function buildClaims(flags) {
   }));
 }
 
-function readFileExcerpt(rel) {
+// A directory in --files is what a human actually means by "verify the spec". Listing the
+// directory name alone produced a file called `docs/02-spec` that does not exist (F-10).
+// The lines a reader of the prompt can actually count: a trailing newline does not add one.
+function displayLines(text) {
+  if (!text) return [];
+  const lines = String(text).split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function expandTarget(rel) {
+  const abs = path.resolve(process.cwd(), rel);
+  if (!fs.existsSync(abs)) return [];
+  if (!fs.statSync(abs).isDirectory()) return [rel.replace(/\\/g, "/")];
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (!BINARY.test(entry.name) && out.length < MAX_DIR_FILES) out.push(path.relative(process.cwd(), p).split(path.sep).join("/"));
+    }
+  };
+  walk(abs);
+  return out;
+}
+
+function readFileExcerpt(rel, budget) {
   const abs = path.resolve(process.cwd(), rel);
   if (!fs.existsSync(abs)) return null;
-  let text = fs.readFileSync(abs, "utf8");
-  const truncated = text.length > MAX_FILE_BYTES;
-  if (truncated) text = text.slice(0, MAX_FILE_BYTES);
-  return { path: rel.replace(/\\/g, "/"), sha256: sha256(text), bytes: text.length, truncated, text };
+  const whole = fs.readFileSync(abs, "utf8");
+  let text = whole.length > MAX_FILE_BYTES ? whole.slice(0, MAX_FILE_BYTES) : whole;
+  const truncated = text.length < whole.length;
+  // The per-file cap alone still let ten 200 KB files through; the budget is what makes the
+  // envelope reviewable. An omitted file is named as omitted, never silently dropped.
+  let omitted = null;
+  if (budget.left <= 0) {
+    omitted = "envelope byte budget";
+    text = "";
+  } else if (text.length > budget.left) {
+    text = text.slice(0, budget.left);
+    omitted = "envelope byte budget";
+  }
+  budget.left -= text.length;
+  return {
+    path: rel.replace(/\\/g, "/"),
+    sha256: sha256(whole),
+    bytes: whole.length,
+    lines: displayLines(whole).length,
+    truncated,
+    ...(omitted ? { omitted } : {}),
+    text,
+  };
 }
 
 function cmdRoute() {
@@ -96,12 +148,17 @@ function cmdRoute() {
     notVerified(`family "${chosenFamily}" is not independent of the author`, null);
   }
 
-  const files = String(flags.files ?? "")
+  const wanted = String(flags.files ?? "")
     .split(",")
     .map((f) => f.trim())
-    .filter(Boolean)
-    .map(readFileExcerpt);
-
+    .filter(Boolean);
+  const targets = [...new Set(wanted.flatMap(expandTarget))];
+  if (wanted.length && !targets.length) {
+    console.error(paint.red(`error: none of the files to verify exist: ${wanted.join(", ")}`));
+    process.exit(1);
+  }
+  const budget = { left: MAX_TOTAL_BYTES };
+  const files = targets.map((f) => readFileExcerpt(f, budget));
   const missing = files.filter((f) => f === null);
   if (missing.length) {
     console.error(paint.red(`error: ${missing.length} of the files to verify do not exist`));
@@ -110,7 +167,7 @@ function cmdRoute() {
 
   const env = {
     schemaVersion: 1,
-    taskId: String(flags["task-id"] ?? `${gate || phaseId}-${task}`).replace(/[^A-Za-z0-9_.:-]+/g, "-"),
+    taskId: String(flags["task-id"] ?? [gate || phaseId, task].filter(Boolean).join("-")).replace(/[^A-Za-z0-9_.:-]+/g, "-"),
     phase: phaseId || null,
     gate: gate || null,
     kind: String(flags.kind ?? "verification"),
@@ -118,7 +175,9 @@ function cmdRoute() {
     author: { model: authorModel, family: familyOf(authorModel, table) },
     verifier: { family: chosenFamily, model: verifierModel, independent: true },
     claims: buildClaims(flags),
-    files: files.map(({ text: _t, ...rest }) => rest),
+    // The excerpts ARE the envelope. Stripping `text` here is what left the verifier with a
+    // filename and a byte count while the instructions demanded a file:line (F-01).
+    files,
     instructions: [
       "You did not write this. Your job is to try to refute each claim, not to agree with it.",
       "Answer every claim with exactly one verdict: confirmed, corrected, refuted or insufficient.",
@@ -127,7 +186,9 @@ function cmdRoute() {
       "A control you did not find is not absent; say what you looked for before concluding it is missing.",
     ],
     resultsContract: {
-      shape: "verdicts.schema.json",
+      // A path that resolves, not a bare filename: the old value named a file that did not
+      // exist anywhere in the repo.
+      shape: "pipeline/schemas/verdicts.schema.json",
       requiredVerdicts: VERDICTS,
       everyClaimAnswered: true,
       evidenceRequiredFor: ["confirmed", "refuted"],
@@ -158,10 +219,16 @@ function cmdRoute() {
   }
 }
 
+// Line-numbered so a citation can be checked instead of taken on faith: `path:line` in the
+// verdict is validated against these exact excerpts in checkVerdict().
+function numbered(text, width) {
+  return displayLines(text).map((line, i) => `${String(i + 1).padStart(width)} | ${line}`);
+}
+
 function renderPrompt(env) {
   const head = [
     `# Verification task ${env.taskId}`,
-    `You are a ${env.verifier.family} model verifying work produced by a ${env.author.family} model.`,
+    `You are a verifier from the ${env.verifier.family} family, checking work produced by a ${env.author.family} model.`,
     `Task: ${env.task}`,
     "",
     "## Rules",
@@ -171,11 +238,27 @@ function renderPrompt(env) {
     ...env.claims.map((c) => `- ${c.id}: ${c.statement}${c.location ? ` (claimed at ${c.location})` : ""}`),
     "",
     "## Files",
-    ...env.files.map((f) => `- ${f.path} (${f.bytes} bytes${f.truncated ? ", truncated" : ""})`),
+    "The full text of every file you may cite follows, with line numbers. Anything not shown here",
+    "is outside your evidence: do not cite a line you cannot see.",
     "",
+  ];
+  for (const f of env.files) {
+    const meta = [`${f.bytes} bytes`, `sha256 ${String(f.sha256).slice(0, 12)}…`, `${f.lines ?? "?"} lines`];
+    if (f.truncated) meta.push("truncated");
+    if (f.omitted) meta.push(`NOT SHOWN: ${f.omitted}`);
+    head.push(`### ${f.path} (${meta.join(", ")})`, "");
+    if (!f.text) {
+      head.push("_No content: this file was outside the envelope's byte budget. Do not cite it._", "");
+      continue;
+    }
+    const width = String(displayLines(f.text).length).length;
+    head.push("```text", ...numbered(f.text, width), "```", "");
+  }
+  head.push(
     "## Reply",
     "Return JSON only, matching verdicts.schema.json, with envelopeHash " + env.envelopeHash + ".",
-  ];
+    "Every `evidence` entry must be `<path>:<line>` from the excerpts above.",
+  );
   return head.join("\n") + "\n";
 }
 
@@ -223,9 +306,34 @@ function cmdDispatch() {
   checkVerdict(env, verdict, out);
 }
 
+// `path:line` or `path:12-20`, resolved against the excerpts the verifier was actually shown.
+// A citation to a file that was never in the envelope is the memory-citation failure this
+// phase exists to stop (F-11): it cannot be distinguished from a plausible invention.
+function citationProblem(entry, env) {
+  const raw = typeof entry === "string" ? entry : entry?.file ? `${entry.file}${entry.line ? `:${entry.line}` : ""}` : "";
+  const m = String(raw).trim().match(/^(?:\.\/)?(.+?):L?(\d+)(?:\s*[-–]\s*(\d+))?$/);
+  if (!m) return `evidence "${raw}" is not <path>:<line>`;
+  const [, file, fromRaw, toRaw] = m;
+  const shown = env.files.find((f) => String(f.path).replace(/^\.\//, "") === file);
+  if (!shown) return `evidence cites "${file}", which was not in the envelope — that citation came from memory`;
+  if (shown.omitted) return `evidence cites "${file}", whose content was not shown (${shown.omitted})`;
+  const lineCount = displayLines(shown.text).length;
+  const from = Number(fromRaw);
+  const to = Number(toRaw ?? fromRaw);
+  if (from < 1 || to < from) return `evidence "${raw}" has an impossible line range`;
+  if (from > lineCount || to > lineCount) return `evidence cites ${file}:${from}${to !== from ? `-${to}` : ""}, but only ${lineCount} line(s) were shown`;
+  return null;
+}
+
 function checkVerdict(env, verdict, label) {
   const problems = [];
   if (verdict.envelopeHash !== env.envelopeHash) problems.push(`envelopeHash mismatch — this verdict answers a different envelope`);
+  if (!verdict.model && !verdict.family) {
+    // Without either, nothing ties the verdict to a model, so "independent" is unjudgeable
+    // and the gate would pass on the strength of an anonymous answer (F-16).
+    problems.push("the verdict names neither a model nor a family, so independence cannot be judged");
+  }
+  if (verdict.schemaVersion !== undefined && verdict.schemaVersion !== 1) problems.push(`schemaVersion must be 1 (found ${JSON.stringify(verdict.schemaVersion)})`);
   if (verdict.model) {
     const ind = independence(env.author.model, verdict.model, table);
     if (!ind.independent) problems.push(`not independent: ${ind.why}`);
@@ -249,6 +357,12 @@ function checkVerdict(env, verdict, label) {
     if (["confirmed", "refuted"].includes(a.verdict) && !(Array.isArray(a.evidence) && a.evidence.length)) {
       problems.push(`claim ${claim.id}: "${a.verdict}" needs evidence (file:line)`);
     }
+    if (Array.isArray(a.evidence)) {
+      for (const entry of a.evidence) {
+        const problem = citationProblem(entry, env);
+        if (problem) problems.push(`claim ${claim.id}: ${problem}`);
+      }
+    }
     if (a.verdict === "insufficient" && !String(a.missing ?? "").trim()) problems.push(`claim ${claim.id}: "insufficient" must name the missing fact`);
   }
   for (const a of answers) {
@@ -262,11 +376,19 @@ function checkVerdict(env, verdict, label) {
   }
 
   const tally = VERDICTS.map((v) => `${v}: ${answers.filter((a) => a.verdict === v).length}`).join("  ");
-  ok(`verdict accepted — ${tally}`);
+  const blocking = answers.filter((a) => ["refuted", "insufficient"].includes(a.verdict));
   for (const a of answers.filter((x) => x.verdict !== "confirmed")) {
     console.log(`  ${a.id} ${paint.yellow(a.verdict)}${a.evidence ? ` ${a.evidence.join(", ")}` : ""}${a.note ? ` — ${a.note}` : ""}`);
   }
-  // A refuted claim is a valid outcome, not an error: it means the verifier did its job.
+  if (blocking.length && !flags["allow-refuted"]) {
+    // A refuted claim is the verifier doing its job — and it is also a gate that must not go
+    // green. Exit 1 so `pipeline gate` records a failure; a human decides what happens next.
+    console.error(paint.red(`RESULT: ${blocking.length} claim(s) were not confirmed — this verification does not pass`));
+    for (const a of blocking) console.error(paint.red(`  - ${a.id} ${a.verdict}${a.note ? `: ${a.note}` : ""}`));
+    console.error(`to record this as a finding rather than a gate failure: add --allow-refuted`);
+    process.exit(1);
+  }
+  ok(`verdict accepted — ${tally}`);
   process.exit(0);
 }
 

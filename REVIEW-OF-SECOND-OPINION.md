@@ -429,3 +429,89 @@ contents, so a verifier cites `file:line` from memory — F-01; `independence` f
 `builderFamily` is left at `unknown` — F-02), then **P3** (`--allow-uncovered` is hardcoded in
 `trace:check`), then the §5 substance gates. P2 is the one that matters most: P0 and P1 make the
 pipeline refuse to *lie*, but the verifier still cannot see what it is verifying.
+
+## 13 · P2 landed — the verifier can see, and independence has something to compare against (2026-11-26)
+
+Version `2.3.0 → 2.4.0`. Both defects were reproduced exactly as described before anything changed.
+
+**F-01 — the verifier was asked to cite what it was never shown.** At `e2ea965`, routing a claim
+about `src/items.ts` produced a 897-byte prompt that said *"For confirmed and refuted you must cite at
+least one file:line you actually read"* and then listed:
+
+```
+## Files
+- docs/02-spec/SPEC.md (367 bytes)
+- src/items.ts (169 bytes)
+```
+
+No contents. The envelope stripped them (`files.map(({ text: _t, ...rest }) => rest)`), and the
+prompt had no other source, so any `file:line` a verifier produced was invented or recalled from
+training data. Two things were wrong and both are now fixed:
+
+- **The excerpts are the envelope.** `files[]` carries `text`, `lines`, `sha256` and `truncated`; the
+  envelope hash covers them, so the seal binds what the verifier was shown rather than a list of
+  names. The prompt renders every file with line numbers (`  12 | …`), says plainly that anything not
+  shown is outside its evidence, and names any file omitted by the byte budget instead of dropping it.
+- **Citations are checked, not taken on faith.** `checkVerdict` resolves each `evidence` entry
+  (`path:line` or `path:12-20`) against those excerpts. `src/authz.ts:88` when only `src/items.ts`
+  was sent → *"cites src/authz.ts, which was not in the envelope — that citation came from memory"*,
+  exit 1. A real file with an invented line → *"only 3 line(s) were shown"*, exit 1.
+
+Same phase, same acceptance bar:
+
+| # | Before | Now |
+|---|---|---|
+| F-10 | `--files docs/02-spec/` produced a "file" named `docs/02-spec` that does not exist, and the run failed | a directory expands to its files (skipping `.git`, `node_modules`, binaries; 60-file cap) |
+| F-16 | a verdict with no `model` and no `family` was accepted, so "independent" described an anonymous answer | rejected: *"names neither a model nor a family"*, exit 1 |
+| — | `refuted` claims exited 0, so a verifier finding a hole produced a green gate | `refuted`/`insufficient` fail the gate (exit 1) unless `--allow-refuted`, which records the finding instead |
+| — | the envelope pointed `resultsContract.shape` at `verdicts.schema.json`, a file that did not exist | `pipeline/schemas/verdicts.schema.json` exists and `checkVerdict` enforces the same rules in code |
+| — | task ids started with a dash (`-REQ-002-is-enforced`) | `REQ-002-is-enforced` |
+
+**F-02 — independence passed against nothing.** At `e2ea965`, with the default
+`independence: { builderFamily: "unknown" }`, three recorded verifiers produced:
+
+```
+builder family: unknown (set independence.builderFamily)
+  ok   G7   INDEPENDENT  openai verified a unknown build
+  ok   G9   INDEPENDENT  google verified a unknown build
+  ok   G12  INDEPENDENT  anthropic verified a unknown build
+RESULT: PASS      (exit 0)
+```
+
+`pipeline gate G9 --builtin independence` recorded that as a green. Now:
+
+- the builder's family is resolved from `--builder-family`, `independence.builderFamily`, or
+  `PIPELINE_BUILDER_MODEL` (a model id is normalised to its family the same way a verifier's is);
+- if none of those names a known family, every required gate is `NOT_VERIFIED` with the reason *"the
+  builder's own family is unknown, so nothing can be shown to be independent of it"*, the tool exits
+  3, and the printed human command is one runnable line (it is recorded verbatim by `pipeline gate`);
+- `pipeline init` derives the family from `PIPELINE_BUILDER_MODEL` and, when it cannot, warns at
+  init time that independence will be NOT_VERIFIED rather than letting it surface at G9;
+- with the family known, the same ledger fails correctly: a `claude-opus` verifier against a
+  `claude-sonnet` builder is `SAME_FAMILY`, exit 1.
+
+**M-01 — a planted page could vouch for a claim.** `quote-verify` logged `injection-suspected` and
+then verified the quote anyway, and a `file:` source could point anywhere, including a file the
+builder wrote. Now a page flagged `injectionSuspected` is quarantined: its claims get no ledger rows,
+are counted separately, and a run whose only evidence was quarantined is `NOT_VERIFIED`, exit 3.
+`file:` sources are limited to `docs/01-research/` and the system temp dir. Every verified row records
+the snapshot's sha256 and whether it was `cached` or `fetched`, so the row can be traced to bytes
+rather than to the reader's self-reported `accessed` date.
+
+**Verified, not asserted.** `run-selftests.mjs` → 17 files + trace selftest, 2/2 groups;
+`node --test pipeline/tools/*.test.mjs` → **165 tests, 0 failing** (was 150);
+`verifier-route.test.mjs` 23, `quote-verify.test.mjs` 10, `pipeline.test.mjs` 14; `demo.mjs` →
+PASS 00→12. `pipeline gate G9 --builtin independence` in a project whose builder family is unknown
+records `NOT_VERIFIED` with exit code 3 and a runnable human command; with the family declared it
+passes.
+
+**What P2 does not claim.** The pipeline still cannot prove that the model that answered the envelope
+is the model the verdict names — `check` verifies the answer's shape, its citations and its declared
+family, not the transport. And the excerpt budget means a verifier can be shown 200 KB of a large
+file; the truncation is stated in the prompt and in the envelope, and a claim about the omitted tail
+should come back `insufficient`, but nothing forces that. Both belong to the live-environment phase
+(P6), where the transport can be pinned.
+
+Still open: **P3** — `--allow-uncovered` is still hardcoded into `trace:check`, which is the same
+class of defect as P1's (the gate can be satisfied by a tag that covers nothing), plus
+`validate-findings` evidence tiers, and `calibrate.mjs` threshold derivation.

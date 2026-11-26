@@ -45,7 +45,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.3.0",
+  pipelineVersion: "2.4.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -364,7 +364,19 @@ switch (command) {
 
     if (!fs.existsSync(abs(cfg.configPath)) || flags.force) {
       const { commands, ...rest } = cfg;
-      writeJson(abs(cfg.configPath), { ...rest, commands });
+      // Independence is judged against the builder's own family. If the runner already knows
+      // the model, record it now: leaving "unknown" made every cross-family verifier look
+      // independent of nothing (REVIEW-OF-SECOND-OPINION.md, F-02).
+      const declared = String(rest.independence?.builderFamily ?? "unknown");
+      const derived = declared === "unknown" ? familyOf(process.env.PIPELINE_BUILDER_MODEL ?? "") : "unknown";
+      const builderFamily = declared !== "unknown" ? declared : derived === "unknown" ? "unknown" : derived;
+      const independence = { ...(rest.independence ?? {}), builderFamily };
+      writeJson(abs(cfg.configPath), { ...rest, independence, commands });
+      if (builderFamily === "unknown") {
+        warn("independence.builderFamily is unknown: independence will be NOT_VERIFIED (never green) until you set it — edit independence.builderFamily in pipeline.config.json, or run with PIPELINE_BUILDER_MODEL set");
+      } else {
+        console.log(paint.dim(`builder family: ${builderFamily} (independence is judged against it)`));
+      }
     }
     // The commit everything is diffed against. Without it, a builder can `git commit` its
     // edits and protected-paths sees a clean tree (REVIEW-OF-SECOND-OPINION.md, F-14).

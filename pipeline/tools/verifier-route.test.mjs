@@ -93,26 +93,145 @@ test("dispatch rejects a verdict that answers a different envelope", () => {
   assert.match(r.stderr, /envelopeHash mismatch/);
 });
 
-test("a real verdict must answer every claim with evidence", () => {
+// A fixture project with a known file, so the citations below resolve against real lines.
+function project(label = "vr") {
   const d = tmp();
-  const out = path.join(d, "env.json");
-  cli(route, ["route", "--author-model", "claude-sonnet", "--claim", "a|b", "--files", "README.md", "--out", out]);
-  const env = JSON.parse(fs.readFileSync(out, "utf8"));
-  const half = path.join(d, "half.mjs");
-  fs.writeFileSync(half, `process.stdout.write(JSON.stringify({envelopeHash:"${env.envelopeHash}",model:"gpt-5",claims:[{id:"C1",verdict:"confirmed"}]}));`);
-  const bad = spawnSync("node", [route, "dispatch", "--envelope", out, "--cmd", `node ${half}`, "--out", path.join(d, "v.json")], { encoding: "utf8", cwd: repoRoot });
-  assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /needs evidence/);
-  assert.match(bad.stderr, /C2 was not answered/);
+  fs.mkdirSync(path.join(d, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(d, "src", "items.ts"),
+    ["export function deleteItem(id: string, ownerId: string) {", "  return db.items.delete({ id });", "}", ""].join("\n"),
+  );
+  fs.writeFileSync(path.join(d, "SPEC.md"), ["# SPEC", "", "### REQ-002 Links are private", ""].join("\n"));
+  return d;
+}
 
-  const good = path.join(d, "good.mjs");
-  fs.writeFileSync(good, `process.stdout.write(JSON.stringify({envelopeHash:"${env.envelopeHash}",model:"gpt-5",claims:[
-    {id:"C1",verdict:"confirmed",evidence:["README.md:12"]},
-    {id:"C2",verdict:"refuted",evidence:["src/x.ts:40"],note:"a route with no authz"}]}));`);
-  const okRun = spawnSync("node", [route, "dispatch", "--envelope", out, "--cmd", `node ${good}`, "--out", path.join(d, "v.json")], { encoding: "utf8", cwd: repoRoot });
-  assert.equal(okRun.status, 0, okRun.stderr);
-  assert.match(okRun.stdout, /verdict accepted/);
-  assert.match(okRun.stdout, /refuted/);
+const routeIn = (d, extra = []) =>
+  cli(route, ["route", "--author-model", "claude-sonnet", "--claim", "a|b", "--files", "src/items.ts", "--out", path.join(d, "env.json"), ...extra], { cwd: d });
+
+const verdictRunner = (d, makeBody) => {
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  const file = path.join(d, `v-${Math.random().toString(16).slice(2)}.mjs`);
+  fs.writeFileSync(file, `process.stdout.write(JSON.stringify(${JSON.stringify(makeBody(env))}));`);
+  return spawnSync("node", [route, "check", "--envelope", path.join(d, "env.json"), "--verdict", file.replace(/\.mjs$/, ".mjs")], { encoding: "utf8", cwd: d });
+};
+
+// `check` reads a verdict FILE; write the JSON rather than a script.
+const checkVerdictFile = (d, makeBody, extra = []) => {
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  const vf = path.join(d, "verdicts.json");
+  fs.writeFileSync(vf, JSON.stringify(makeBody(env)));
+  return cli(route, ["check", "--envelope", path.join(d, "env.json"), "--verdict", vf, ...extra], { cwd: d });
+};
+
+test("the verifier is shown the files, not just their names (F-01)", () => {
+  const d = project();
+  const promptFile = path.join(d, "prompt.md");
+  const r = routeIn(d, ["--write-prompt", promptFile]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  assert.match(String(env.files[0].text), /deleteItem/, "the envelope must carry the excerpt");
+  assert.equal(env.files[0].lines, 3);
+
+  const prompt = fs.readFileSync(promptFile, "utf8");
+  // The defect: the prompt listed "src/items.ts (169 bytes)" and then demanded a file:line.
+  assert.match(prompt, /1 \| export function deleteItem/);
+  assert.match(prompt, /3 \| \}/);
+  assert.match(prompt, /never be shown|not shown here|outside your evidence/i);
+  assert.doesNotMatch(prompt, /^- src\/items\.ts \(\d+ bytes\)$/m, "the file list alone is not the prompt");
+});
+
+test("a directory in --files is expanded, not treated as a file (F-10)", () => {
+  const d = project();
+  const r = cli(route, ["route", "--author-model", "claude-sonnet", "--files", "src", "--out", path.join(d, "env.json")], { cwd: d });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  assert.deepEqual(env.files.map((f) => f.path), ["src/items.ts"]);
+});
+
+test("a claim backed by a file:line the verifier could see is accepted", () => {
+  const d = project();
+  routeIn(d);
+  const r = checkVerdictFile(
+    d,
+    (env) => ({
+      schemaVersion: 1,
+      envelopeHash: env.envelopeHash,
+      model: "gpt-5",
+      claims: [
+        { id: "C1", verdict: "confirmed", evidence: ["src/items.ts:1"] },
+        { id: "C2", verdict: "corrected", evidence: ["src/items.ts:1-2"], note: "ownerId is accepted and ignored" },
+      ],
+    }),
+    ["--allow-refuted"],
+  );
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /verdict accepted/);
+});
+
+test("a citation to a file that was never provided is rejected as from memory (F-11)", () => {
+  const d = project();
+  routeIn(d);
+  const r = checkVerdictFile(d, (env) => ({
+    envelopeHash: env.envelopeHash,
+    model: "gpt-5",
+    claims: [{ id: "C1", verdict: "confirmed", evidence: ["src/authz.ts:88"] }],
+  }));
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /src\/authz\.ts.*came from memory/);
+});
+
+test("a citation to a line beyond the excerpt is rejected", () => {
+  const d = project();
+  routeIn(d);
+  const r = checkVerdictFile(d, (env) => ({
+    envelopeHash: env.envelopeHash,
+    model: "gpt-5",
+    claims: [{ id: "C1", verdict: "confirmed", evidence: ["src/items.ts:900"] }],
+  }));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /only 3 line\(s\) were shown/);
+});
+
+test("a verdict with no model and no family cannot be judged independent (F-16)", () => {
+  const d = project();
+  routeIn(d);
+  const r = checkVerdictFile(d, (env) => ({
+    envelopeHash: env.envelopeHash,
+    claims: [{ id: "C1", verdict: "confirmed", evidence: ["src/items.ts:1"] }],
+  }));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /neither a model nor a family/);
+});
+
+test("a refuted claim fails the gate, and --allow-refuted records it instead", () => {
+  const d = project();
+  routeIn(d);
+  const refuted = (env) => ({
+    envelopeHash: env.envelopeHash,
+    model: "gpt-5",
+    claims: env.claims.map((c) => ({ id: c.id, verdict: "refuted", evidence: ["src/items.ts:2"], note: "ownerId is never checked" })),
+  });
+  const strict = checkVerdictFile(d, refuted);
+  assert.equal(strict.status, 1);
+  assert.match(strict.stderr, /claim\(s\) were not confirmed/);
+
+  const allowed = checkVerdictFile(d, refuted, ["--allow-refuted"]);
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.match(allowed.stdout, /verdict accepted/);
+});
+
+test("an insufficient claim must name the missing fact", () => {
+  const d = project();
+  routeIn(d);
+  const r = checkVerdictFile(d, (env) => ({
+    envelopeHash: env.envelopeHash,
+    model: "gpt-5",
+    claims: [{ id: "C1", verdict: "insufficient" }, { id: "C2", verdict: "insufficient", missing: "the schema of db.items" }],
+  }), ["--allow-refuted"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /C1: "insufficient" must name the missing fact/);
+  assert.doesNotMatch(r.stderr, /C2: "insufficient"/);
 });
 
 test("check catches an envelope edited after routing", () => {
@@ -172,4 +291,50 @@ test("independence gate: an unreadable ledger is NOT_VERIFIED with a command", (
   const r = cli(indep, ["--ledger", "/tmp/definitely-not-a-ledger.jsonl"]);
   assert.equal(r.status, 3);
   assert.match(r.stdout, /human command/);
+});
+
+// ---- P2 · independence must fail closed when the builder is unknown (F-02) -------------
+test("independence is NOT_VERIFIED when the builder's family is unknown, never PASS", () => {
+  const d = tmp();
+  const ledger = path.join(d, "l.jsonl");
+  seedLedger(ledger, [["G7", "gpt-5"], ["G9", "gemini-2.5-pro"]]);
+  // This is the defect: with no builder family, both rows were INDEPENDENT and the tool
+  // printed RESULT: PASS, exit 0 — "openai verified a unknown build".
+  const r = cli(indep, ["--ledger", ledger, "--require", "G7,G9"]);
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /RESULT: NOT_VERIFIED/);
+  assert.match(r.stdout, /builder's own family is unknown/);
+  assert.match(r.stdout, /--builder-family/);
+  assert.doesNotMatch(r.stdout, /INDEPENDENT/);
+  assert.doesNotMatch(r.stdout, /RESULT: PASS/);
+});
+
+test("the builder family is derived from PIPELINE_BUILDER_MODEL when it is not declared", () => {
+  const d = tmp();
+  const ledger = path.join(d, "l.jsonl");
+  seedLedger(ledger, [["G7", "gpt-5"], ["G9", "claude-opus"]]);
+  const res = spawnSync("node", [indep, "--ledger", ledger, "--require", "G7,G9", "--json"], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: { ...process.env, PIPELINE_BUILDER_MODEL: "claude-sonnet-4" },
+  });
+  assert.equal(res.status, 1, "the same-family verifier must be caught, not waved through");
+  const out = JSON.parse(res.stdout);
+  assert.equal(out.builderFamily, "anthropic");
+  assert.equal(out.builderFamilySource, 'model id "claude-sonnet-4"');
+  assert.equal(out.rows.find((x) => x.gate === "G9").state, "SAME_FAMILY");
+  assert.equal(out.rows.find((x) => x.gate === "G7").state, "INDEPENDENT");
+});
+
+test("an oversized file is truncated and the prompt says so", () => {
+  const d = project();
+  fs.writeFileSync(path.join(d, "big.txt"), "x".repeat(250_000));
+  const promptFile = path.join(d, "prompt.md");
+  const r = cli(route, ["route", "--author-model", "claude-sonnet", "--files", "big.txt", "--out", path.join(d, "env.json"), "--write-prompt", promptFile], { cwd: d });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const env = JSON.parse(fs.readFileSync(path.join(d, "env.json"), "utf8"));
+  assert.equal(env.files[0].bytes, 250_000);
+  assert.equal(env.files[0].truncated, true);
+  assert.ok(env.files[0].text.length <= 200_000);
+  assert.match(fs.readFileSync(promptFile, "utf8"), /truncated/);
 });
