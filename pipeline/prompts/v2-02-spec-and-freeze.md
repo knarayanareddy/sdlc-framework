@@ -10,6 +10,10 @@ node pipeline/bin/pipeline.mjs gate G2 --builtin trace:structure
 node pipeline/bin/pipeline.mjs phase done 02
 
 node pipeline/bin/pipeline.mjs phase start H1 && node pipeline/bin/pipeline.mjs phase done H1   # needs DECISIONS.md
+
+# FZ does NOT run here. It needs H1 done AND G3 (phase 03) and G4 (phase 04) recorded,
+# so freeze happens after design and architecture, not straight after the spec:
+#   phase 03 → gate G3 → phase 04 → gate G4 → phase start FZ → phase done FZ
 node pipeline/bin/pipeline.mjs phase start FZ && node pipeline/bin/pipeline.mjs phase done FZ   # hashes SPEC.md
 ```
 

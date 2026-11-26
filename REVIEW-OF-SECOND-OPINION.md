@@ -344,3 +344,51 @@ worse than either: at `c886abc` a builder can type its own gate result, skip the
 the frozen spec, edit the gate tool itself, and commit the evidence away — and the pipeline reports
 **PASS** at every step. P0 closes all five of those in roughly a day of work and is the difference
 between a demo that looks enforced and a pipeline that is.
+
+---
+
+## 11 · P0 landed — the provenance floor (2026-11-26)
+
+Scope approved by the owner ("start P0 now"). Version `2.1.0 → 2.2.0`, because the semantics
+changed: an agent-supplied gate command is now refused rather than recorded as a pass.
+
+| Exploit (reproduced at `420b560`) | Before | After |
+|---|---|---|
+| `gate G7 --cmd true` | `PASS`, exit 0 | **refused**: `NOT_VERIFIED`, exit 3, hash printed for a human to allowlist |
+| `phase start 05` with no `FZ` | `phase 05 started`, exit 0 | **exit 1**: `phase FZ is not done` |
+| `phase start 09` with no `08` | `phase 09 started`, exit 0 | **exit 1**: `phase 08 is not done` |
+| edit `SPEC.md` after freeze → `verify` | `no drift`, exit 0 | **exit 1**: `spec drift: … write CHANGES.md, then freeze --refreeze` |
+| `freeze --refreeze` with no `CHANGES.md` | re-frozen, exit 0 | **exit 1**: `CHANGES.md is missing or under 40 bytes` |
+| tamper `pipeline/bin` + `pipeline.config.json`, then `git commit` | `changed files: 0 RESULT: PASS` | **exit 1**: both files listed, diff base is the init commit |
+| delete the last ledger lines | `chain: intact RESULT: PASS` | **exit 1**: `… has no ledger entry — the ledger was truncated` |
+| truncated JSON line in the ledger | `SyntaxError` crash | **exit 1**: `line N is not valid JSON — …` |
+| `run-selftests` in a path with a space | `ENOENT … pipeline%20space` | **exit 0** (20 files converted to `fileURLToPath`) |
+
+What else changed:
+
+- **`G8` exists.** Phase `08` owns a real gate (`entrypoints,coverage,findings`), so the red team
+  phase cannot be skipped by omitting a prerequisite string. `09` requires both `08` and `G8`.
+- **`H1` and `FZ` are real prerequisites**, not free-standing phases: `H1 ← 02`, `FZ ← H1,03,04`,
+  `05 ← FZ`. Decision 4 in §9 (collapse vs keep the phases) is still open — this keeps them, which
+  is the conservative half of that decision.
+- **`SPEC.sha256` has three readers**: `pipeline verify`, `phase done` (any phase), and
+  `trace-check-v2` itself. `pipeline report` now prints a `spec:` line so a stale freeze is visible
+  without running anything.
+- **Ledger entry v2**: `tree` (hash of every tracked + untracked-non-ignored file the gate ran
+  against, minus orchestrator state), `commandSource`, and an optional `hmac` when
+  `PIPELINE_LEDGER_KEY` is set. `gate-ledger verify --require-hmac` enforces the seal.
+- **The incentive inversion is gone**: a tool that exits 3 without printing `human command:` now
+  records the gate command itself as the human command, so an honest `NOT_VERIFIED` no longer fails
+  `G10`.
+- **Claim honesty**: the README no longer says the ledger is tamper-evident; it says what it is
+  (an unkeyed chain that catches accidental edits, narrowed by the progress cross-check, the tree
+  hash and the optional HMAC). `INTEGRATIONS.md` lost the two commands that crashed (`--files … ,src`
+  → `EISDIR`, `--dry-run` without stdin → exit 3) and the stale `2.0.0`/count claims.
+- **Acceptance test**: `pipeline/tools/pipeline.test.mjs`, 11 tests, one per exploit above plus a
+  positive control (an allowlisted command still passes). It runs inside `run-selftests.mjs`, so CI
+  now fails if any of these bypasses returns.
+
+Still open, in order: **P1** (`dast`/`fuzz`/`tripwire`/`entrypoints`/`sandbox` fail-open exit
+codes; `--require-all` still executes before refusing), **P2** (the verifier never sees the files;
+independence fails open), **P3** (`--allow-uncovered` is still hardcoded in `trace:check`). Those
+are exactly the four findings that `pipeline.test.mjs` does *not* yet cover.

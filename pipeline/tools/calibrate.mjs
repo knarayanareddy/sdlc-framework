@@ -16,12 +16,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureDir, fail, ok, paint, parseArgs, readJson, warn, writeJson } from "./lib/common.mjs";
 import { BUG_CLASSES, classById, normaliseClass, selectClasses } from "./lib/bug-classes.mjs";
+import { fileURLToPath } from "node:url";
 
 const { flags, positional } = parseArgs();
 const [command = "status"] = positional;
 
 const THRESHOLDS = Object.freeze({ overall: 0.7, perClassFloor: 1 });
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const pipelineVersion = (() => {
   try {
     return fs.readFileSync(path.resolve(here, "..", "VERSION"), "utf8").trim();

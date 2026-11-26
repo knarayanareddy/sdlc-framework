@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const TOOL = new URL("./quote-verify.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./quote-verify.mjs", import.meta.url));
 
 function setup({ page, claims }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qv-"));

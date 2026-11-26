@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./protected-paths.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./protected-paths.mjs", import.meta.url));
 
 function git(cwd, ...args) {
   return spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=test", ...args], { cwd, encoding: "utf8" });

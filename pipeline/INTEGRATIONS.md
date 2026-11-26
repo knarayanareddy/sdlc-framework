@@ -29,7 +29,7 @@ Reason it exists: a second opinion from the same model family is not a second op
 ```bash
 node pipeline/tools/verifier-route.mjs status          # families, author, routable targets
 node pipeline/tools/verifier-route.mjs route --phase 07 --gate G7 --author-model claude-sonnet-4 \
-  --task "spec-to-code compliance" --claims claims.json --files docs/02-spec/SPEC.md,src --out env.json
+  --task "spec-to-code compliance" --claims claims.json --files docs/02-spec/SPEC.md --out env.json
 node pipeline/tools/verifier-route.mjs dispatch --envelope env.json --out verdicts.json
 node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pipeline.config.json
 ```
@@ -65,7 +65,8 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
    export PIPELINE_VERIFIER_URL="https://api.example.com/v1/chat/completions"
    export PIPELINE_VERIFIER_KEY="…"
    export PIPELINE_VERIFIER_MODEL="gpt-5"
-   node pipeline/examples/verifier-transport.example.mjs --dry-run    # inspect the request, no network
+   echo '{"prompt":"…","envelope":{}}' | node pipeline/examples/verifier-transport.example.mjs --dry-run   # inspect the request, no network
+   # (it reads the envelope on stdin; without stdin it exits 3 rather than guessing)
    ```
 
    If your provider differs, copy `pipeline/examples/verifier-transport.example.mjs` and change
@@ -300,7 +301,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# calibrated for 2.0.0 — recall 80.0% on 10 planted bugs
+# NOT_VERIFIED: calibration has not been run for pipeline 2.2.0
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
@@ -319,7 +320,7 @@ and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
 ## 5 · The four commands that tell you where you stand
 
 ```bash
-node pipeline/tools/run-selftests.mjs                  # 17 groups: the code is intact
+node pipeline/tools/run-selftests.mjs                  # 17 test files + the traceability selftest: the code is intact
 node pipeline/tools/verifier-route.mjs status          # is a cross-family verifier available?
 node pipeline/tools/sandbox.mjs check                  # what can this host actually enforce?
 node pipeline/tools/dast.mjs plan                       # which scanners are installed?

@@ -7,8 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { paint } from "./lib/common.mjs";
+import { fileURLToPath } from "node:url";
 
-const dir = path.dirname(new URL(import.meta.url).pathname);
+const dir = path.dirname(fileURLToPath(import.meta.url));
 const entries = fs.readdirSync(dir).filter((f) => /\.(test|selftest)\.mjs$/.test(f)).sort();
 
 const nodeTests = entries.filter((f) => f.endsWith(".test.mjs"));

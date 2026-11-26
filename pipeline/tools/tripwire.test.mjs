@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./tripwire.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./tripwire.mjs", import.meta.url));
 
 function run(checks, extra = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-"));

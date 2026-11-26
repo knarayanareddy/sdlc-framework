@@ -42,6 +42,22 @@ if (!fs.existsSync(specPath)) {
 }
 
 const spec = fs.readFileSync(specPath, "utf8");
+
+// A frozen spec hash that nothing reads is decoration: `pipeline freeze` wrote SPEC.sha256
+// and no later step compared it, so the spec could be edited after freeze and every gate
+// still passed (REVIEW-OF-SECOND-OPINION.md, F-04). This is the reader.
+const specHashCandidates = [flagValue("--spec-hash"), `${specPath}.sha256`, specPath.replace(/\.md$/i, ".sha256")].filter(Boolean);
+const specHashFile = specHashCandidates.find((f) => fs.existsSync(f));
+if (specHashFile && !argv.includes("--no-spec-hash")) {
+  const frozen = fs.readFileSync(specHashFile, "utf8").trim().split(/\s+/)[0];
+  const actual = crypto.createHash("sha256").update(spec, "utf8").digest("hex");
+  if (frozen !== actual) {
+    problems.push(
+      `spec: ${specPath} no longer matches ${specHashFile} (frozen ${frozen.slice(0, 12)}…, now ${actual.slice(0, 12)}…). ` +
+        `Write the change note, then: node pipeline/bin/pipeline.mjs freeze --refreeze`,
+    );
+  }
+}
 const heads = [...spec.matchAll(/^###\s+((?:REQ|SEC|NFR)-\d+)\b.*$/gm)];
 const reqs = heads.map((m, i) => {
   const start = m.index ?? 0;

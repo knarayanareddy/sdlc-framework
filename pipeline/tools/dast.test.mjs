@@ -8,8 +8,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fromNuclei, fromSarif, fromSemgrep, fromZap, lead } from "./lib/leads.mjs";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const dast = path.join(here, "dast.mjs");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "dast-"));
 const cli = (args, cwd) => spawnSync("node", [dast, ...args], { encoding: "utf8", cwd: cwd ?? here, timeout: 120_000 });

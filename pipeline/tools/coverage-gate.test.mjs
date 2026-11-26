@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./coverage-gate.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./coverage-gate.mjs", import.meta.url));
 
 const ENTRYPOINTS = {
   entrypoints: [

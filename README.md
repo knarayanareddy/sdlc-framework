@@ -4,7 +4,13 @@
 
 A comprehensive prompt and verification framework designed for LLMs, autonomous coding agents, and engineers.
 
-**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Nine tools and a worked example, all zero-dependency and self-tested.
+**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Twenty zero-dependency tools, seventeen of them self-tested, plus a worked example that walks every phase.
+
+Three things worth knowing before you trust a green run:
+
+- **A gate is a command result, not an opinion** — including when the command is one the caller chose. `pipeline gate --cmd` is refused unless a human allowlists that exact command in the protected `docs/00-control/allowed-commands.json`. At 2.1.0 it was not, so `gate G7 --cmd true` recorded a pass.
+- **The ledger catches accidental edits, not a hostile agent.** It is an unkeyed hash chain inside a directory the build agent can write to. Deleting the tail lines and recomputing the links defeats it. What narrows that gap: the chain is cross-checked against `docs/progress.json` (so a truncated tail leaves gates progress still claims), every entry records a hash of the source tree the gate ran against, and setting `PIPELINE_LEDGER_KEY` outside the agent's environment seals each entry with an HMAC.
+- **The spec freeze is enforced.** `docs/02-spec/SPEC.sha256` is re-checked by `verify`, by `trace-check` and by `phase done`; re-freezing requires a change note in `docs/02-spec/CHANGES.md`.
 
 ```bash
 node pipeline/tools/run-selftests.mjs      # every tool passes its own test
@@ -59,10 +65,11 @@ result, not an opinion.
 
 - **`pipeline/`** — the framework and the v2 tooling
   - **`bin/pipeline.mjs`**: the orchestrator CLI — state machine, gate runner, hash-chained ledger, report
-  - **`tools/`**: ten gate tools, each with a `*.test.mjs` beside it:
+  - **`tools/`**: twenty zero-dependency tools, seventeen with a `*.test.mjs` beside them:
     `trace-check-v2`, `gate-ledger`, `entrypoints`, `coverage-gate`, `quote-verify`,
     `validate-findings`, `validate-progress`, `protected-paths`, `tripwire`, `estimate`,
-    plus `expect-files`, `run-selftests` and the end-to-end `demo`
+    `sandbox`, `dast`, `fuzz-api`, `verifier-route`, `independence`, `calibrate`, `families`,
+    `leads`, `bug-classes`, plus `expect-files`, `run-selftests` and the end-to-end `demo`
   - **`schemas/`**: JSON schemas for `progress.json`, `findings.json`, `coverage-ledger.json`
   - **`examples/mini-app/`**: a three-requirement worked example the demo runs end to end
   - **`RUNBOOK.md`**: every command needed to run a real project

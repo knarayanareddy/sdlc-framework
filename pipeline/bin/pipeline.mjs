@@ -45,7 +45,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.1.0",
+  pipelineVersion: "2.2.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -57,7 +57,7 @@ const DEFAULTS = {
   researchSnapshots: "docs/01-research/snapshots",
   quoteLog: "docs/01-research/quote-verify.log",
   digest: "docs/02-spec/DECISIONS.md",
-  speccChanges: "docs/02-spec/CHANGES.md",
+  specChanges: "docs/02-spec/CHANGES.md",
   entrypoints: "docs/08-redteam/run-1/entrypoints.json",
   coverageLedger: "docs/08-redteam/run-1/coverage-ledger.json",
   findings: "docs/08-redteam/run-1/findings.json",
@@ -100,6 +100,9 @@ function loadConfig() {
 }
 
 const { cfg } = loadConfig();
+// `speccChanges` was a typo in 2.1.0. Keep reading it so an existing pipeline.config.json
+// (and a spec written against it) does not silently lose its change-note path.
+if (!cfg.specChanges && cfg.speccChanges) cfg.specChanges = cfg.speccChanges;
 const abs = (rel) => path.resolve(projectRoot, rel);
 const toolsRel = path.relative(projectRoot, TOOLS_DIR).split(path.sep).join("/") || ".";
 const tool = (file) => `${toolsRel}/${file}`;
@@ -163,7 +166,7 @@ function builtin(name) {
     case "progress":
       return `node ${tool("validate-progress.mjs")} ${c.progress}`;
     case "ledger":
-      return `node ${tool("gate-ledger.mjs")} verify --path ${c.ledger}`;
+      return `node ${tool("gate-ledger.mjs")} verify --path ${c.ledger} --progress ${c.progress}`;
     case "protected":
       return `node ${tool("protected-paths.mjs")} --config ${c.configPath}`;
     case "tripwire":
@@ -233,6 +236,38 @@ function checkArtifacts(name) {
   return problems;
 }
 
+// A gate is a command result, not an opinion — including when the command is one the
+// caller chose. `--cmd` used to record `passed` for whatever it was given (`--cmd true`),
+// which makes every gate advisory. Now an agent-supplied command is refused unless a
+// human has allowlisted its hash in a protected control file.
+const ALLOWLIST = "docs/00-control/allowed-commands.json";
+
+function allowlist() {
+  const file = abs(flags["allow-commands"] ?? ALLOWLIST);
+  if (!fs.existsSync(file)) return {};
+  try {
+    return readJson(file).sha256 ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function allowlisted(cmd) {
+  return Boolean(allowlist()[sha256(cmd)]);
+}
+
+// The spec hash is only worth writing if something reads it. This is the reader.
+function specDrift() {
+  const specFile = abs(cfg.spec);
+  const hashFile = abs(cfg.specHash);
+  if (!fs.existsSync(hashFile)) return null;
+  const frozen = fs.readFileSync(hashFile, "utf8").trim().split(/\s+/)[0];
+  if (!fs.existsSync(specFile)) return `${cfg.specHash} exists but ${cfg.spec} does not`;
+  const now = sha256(fs.readFileSync(specFile, "utf8"));
+  if (frozen === now) return null;
+  return `the spec changed after it was frozen (frozen ${frozen.slice(0, 12)}…, now ${now.slice(0, 12)}…). Write ${cfg.specChanges}, then: node pipeline/bin/pipeline.mjs freeze --refreeze`;
+}
+
 function doFreeze({ refreeze = false } = {}) {
   const specFile = abs(cfg.spec);
   if (!fs.existsSync(specFile)) fail(`cannot freeze: ${cfg.spec} does not exist`);
@@ -244,14 +279,23 @@ function doFreeze({ refreeze = false } = {}) {
     ok(`spec already frozen at ${hash.slice(0, 12)}…`);
     return { changed: false, hash };
   }
-  if (previous && !refreeze) {
-    const hasChangeNote = substantialFile(abs(cfg.speccChanges), 40);
+  if (previous && previous !== hash) {
+    // The change note is required on BOTH paths. `--refreeze` is the documented way to
+    // accept a spec change, which made it the documented way to skip this check.
+    const hasChangeNote = substantialFile(abs(cfg.specChanges), 40);
     console.error(paint.red(`spec changed after freeze`));
     console.error(`  frozen:  ${previous.slice(0, 12)}…`);
     console.error(`  current: ${hash.slice(0, 12)}…`);
-    if (!hasChangeNote) console.error(`  and ${cfg.speccChanges} does not exist or is empty`);
-    console.error(`Write the change note, then re-freeze: node pipeline/bin/pipeline.mjs freeze --refreeze`);
-    process.exit(1);
+    if (!hasChangeNote) {
+      console.error(paint.red(`  ${cfg.specChanges} is missing or under 40 bytes`));
+      console.error(`Write what changed and why, then re-run: node pipeline/bin/pipeline.mjs freeze --refreeze`);
+      process.exit(1);
+    }
+    if (!refreeze) {
+      console.error(`  ${cfg.specChanges} is present. Accept the change with: node pipeline/bin/pipeline.mjs freeze --refreeze`);
+      process.exit(1);
+    }
+    warn(`re-freezing with a change note in ${cfg.specChanges}`);
   }
   ensureDir(path.dirname(hashFile));
   fs.writeFileSync(hashFile, `${hash}  ${path.basename(cfg.spec)}\n`);
@@ -266,9 +310,12 @@ function tail(text, lines = 12) {
 
 function recordGate(gate, entry, extra = {}) {
   const progress = readProgress();
+  const commandSource =
+    entry.commandSource ?? (entry.command ? "builtin" : entry.evidence ? "evidence" : "manual");
   progress.gates[gate] = {
     status: entry.status,
     command: entry.command ?? null,
+    commandSource,
     evidence: entry.evidence ?? null,
     exitCode: entry.exitCode ?? null,
     reason: entry.reason ?? null,
@@ -281,17 +328,22 @@ function recordGate(gate, entry, extra = {}) {
     progress.gates[gate].explicitApproval = true;
   }
   writeProgress(progress);
-  appendLedger(abs(cfg.ledger), {
-    phase: progress.phase,
-    gate,
-    status: entry.status,
-    command: entry.command ?? null,
-    exitCode: entry.exitCode ?? null,
-    commit: commitSha(),
-    evidence: entry.evidence ?? null,
-    filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
-    modelFamily: flags.model ?? null,
-  });
+  appendLedger(
+    abs(cfg.ledger),
+    {
+      phase: progress.phase,
+      gate,
+      status: entry.status,
+      command: entry.command ?? null,
+      commandSource,
+      exitCode: entry.exitCode ?? null,
+      commit: commitSha(),
+      evidence: entry.evidence ?? null,
+      filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
+      modelFamily: flags.model ?? null,
+    },
+    { cwd: projectRoot },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -314,12 +366,29 @@ switch (command) {
       const { commands, ...rest } = cfg;
       writeJson(abs(cfg.configPath), { ...rest, commands });
     }
-    writeProgress({ ...readProgress(), schemaVersion: 2, pipelineVersion: cfg.pipelineVersion, phase: "00", gates: {}, phases: {}, blockers: [], rounds: { full: 0, diff: 0 }, notVerified: [], createdAt: new Date().toISOString() });
+    // The commit everything is diffed against. Without it, a builder can `git commit` its
+    // edits and protected-paths sees a clean tree (REVIEW-OF-SECOND-OPINION.md, F-14).
+    const baseCommit = commitSha();
+    writeProgress({ ...readProgress(), schemaVersion: 2, pipelineVersion: cfg.pipelineVersion, phase: "00", baseCommit, gates: {}, phases: {}, blockers: [], rounds: { full: 0, diff: 0 }, notVerified: [], createdAt: new Date().toISOString() });
+    if (!baseCommit) warn("not a git repository: protected-paths cannot see committed edits, so it will report NOT_VERIFIED");
+    else console.log(paint.dim(`base commit: ${baseCommit} (protected-paths diffs against this, not HEAD)`));
+
+    const allowFile = abs(ALLOWLIST);
+    if (!fs.existsSync(allowFile)) {
+      writeJson(allowFile, {
+        note: "Commands a human has allowlisted for `pipeline gate --cmd`. Agent-supplied commands are refused. This file is a protected path: adding an entry is visible to a reviewer.",
+        sha256: {},
+      });
+    }
 
     const ledgerFile = abs(cfg.ledger);
     if (!fs.existsSync(ledgerFile) || flags.force) {
       fs.writeFileSync(ledgerFile, "");
-      appendLedger(ledgerFile, { phase: "00", gate: "GENESIS", status: "passed", command: "pipeline init", exitCode: 0, commit: commitSha() });
+      appendLedger(
+        ledgerFile,
+        { phase: "00", gate: "GENESIS", status: "passed", command: "pipeline init", commandSource: "orchestrator", exitCode: 0, commit: commitSha() },
+        { cwd: projectRoot },
+      );
     }
 
     fs.writeFileSync(
@@ -329,6 +398,10 @@ switch (command) {
         "# Enforced by: node pipeline/tools/protected-paths.mjs",
         "# tests/**            — append-only after the phase-05 baseline",
         "# pipeline/tools/**   — the gate must not be edited by the agent it gates",
+        "# pipeline/bin/**     — the orchestrator must not be edited by the agent it orchestrates",
+        "# pipeline.config.json — maps every gate to the command it runs",
+        "# docs/02-spec/SPEC.sha256 — only `pipeline freeze` writes it",
+        "# docs/05-test/baseline.json — the frozen test baseline",
         "# docs/progress.json  — written only by the orchestrator",
         "# docs/gate-ledger.jsonl — append-only, hash-chained",
         "# docs/00-control/**  — guardrails are set before the run",
@@ -408,12 +481,28 @@ switch (command) {
     const gate = rest[0] ?? positional[1];
     if (!gate || !GATE_IDS.includes(gate)) fail(`specify a gate id from: ${GATE_IDS.join(" ")}`);
 
+    if (flags.cmd) {
+      const cmd = String(flags.cmd);
+      if (!allowlisted(cmd)) {
+        const h = sha256(cmd);
+        const reason = `agent-supplied command is not evidence: "${cmd.slice(0, 80)}" would be recorded as a pass because the caller typed it`;
+        recordGate(gate, { status: "NOT_VERIFIED", reason, humanCommand: cmd, commandSource: "refused-agent-command" });
+        console.error(paint.red(`refusing to record ${gate} from an agent-supplied --cmd`));
+        console.error(`  ${reason}`);
+        console.error(`  Either a human runs it, or a human allowlists the exact command in ${ALLOWLIST} (a protected path):`);
+        console.error(`    "${h}": ${JSON.stringify(cmd.slice(0, 120))}`);
+        console.log(`\n${gate} NOT_VERIFIED (recorded in ${cfg.ledger})`);
+        process.exit(3);
+      }
+      console.log(paint.dim(`--cmd matches a human allowlist entry (sha256 ${sha256(cmd).slice(0, 12)}…)`));
+    }
+
     if (flags["not-verified"]) {
       const reason = flags.reason;
       const humanCommand = flags["human-command"];
       if (!reason || String(reason).length < 8) fail("--not-verified needs --reason \"why it could not be evaluated\"");
       if (!humanCommand) fail("--not-verified needs --human-command \"what a human should run\" (fail closed, but leave a way out)");
-      recordGate(gate, { status: "NOT_VERIFIED", reason, humanCommand });
+      recordGate(gate, { status: "NOT_VERIFIED", reason, humanCommand, commandSource: "manual" });
       warn(`${gate} recorded NOT_VERIFIED: ${reason}`);
       console.log(`a human must run: ${humanCommand}`);
       break;
@@ -443,7 +532,7 @@ switch (command) {
         recordGate(gate, { status: "failed", evidence, exitCode: 1 });
         fail(`evidence not found or empty: ${missing.join(", ")}`);
       }
-      recordGate(gate, { status: "passed", evidence, exitCode: 0 });
+      recordGate(gate, { status: "passed", evidence, exitCode: 0, commandSource: "evidence" });
       ok(`${gate} passed on evidence: ${evidence.join(", ")}`);
       console.log(paint.dim("note: an evidence gate is a judgement call. A fresh reviewer must still read it (07)."));
       break;
@@ -455,6 +544,7 @@ switch (command) {
     }
 
     const joined = cmds.join(" && ");
+    const commandSource = flags.builtin ? (flags.cmd ? "builtin+allowlisted" : "builtin") : flags.cmd ? "allowlisted" : "manual";
     console.log(paint.dim(`run: ${joined}`));
     const started = Date.now();
     const res = run(joined, { cwd: projectRoot, timeout: Number(flags.timeout ?? 1_800_000) });
@@ -475,15 +565,18 @@ switch (command) {
       )
         .trim()
         .slice(0, 300);
-      const humanCommand = (out.match(/human command:\s*(.+)/)?.[1] ?? "").trim().slice(0, 300) || null;
-      recordGate(gate, { status: "NOT_VERIFIED", command: joined, exitCode: 3, reason, humanCommand, evidence });
+      // A tool that exits 3 without printing a human command used to write null, which then
+      // failed G10 — so an honest NOT_VERIFIED was punished harder than a lie. Fall back to
+      // the command itself: it is exactly what a human must run.
+      const humanCommand = (out.match(/human command:\s*(.+)/)?.[1] ?? "").trim().slice(0, 300) || joined;
+      recordGate(gate, { status: "NOT_VERIFIED", command: joined, commandSource, exitCode: 3, reason, humanCommand, evidence });
       console.log("");
       console.log(paint.yellow(`${gate} NOT_VERIFIED (exit 3, recorded in ${cfg.ledger})`));
       console.log(`  reason: ${reason}`);
       if (humanCommand) console.log(`  human command: ${humanCommand}`);
       process.exit(3);
     }
-    recordGate(gate, { status: passed ? "passed" : "failed", command: joined, exitCode: res.code, evidence });
+    recordGate(gate, { status: passed ? "passed" : "failed", command: joined, commandSource, exitCode: res.code, evidence });
 
     console.log("");
     if (passed) ok(`${gate} PASSED in ${seconds}s (exit 0, recorded in ${cfg.ledger})`);
@@ -497,6 +590,28 @@ switch (command) {
 
   case "verify": {
     const progress = readProgress();
+    let blocked = false;
+
+    // 1 · the frozen spec is the thing every later gate is judged against. Check it first.
+    const specProblem = specDrift();
+    if (specProblem) {
+      console.error(paint.red(`spec drift: ${specProblem}`));
+      blocked = true;
+    }
+
+    // 2 · the ledger must still describe the same history progress.json remembers.
+    const ledgerCheck = verifyLedger(abs(cfg.ledger), {
+      progress,
+      requireHmac: Boolean(flags["require-hmac"]),
+    });
+    if (!ledgerCheck.ok) {
+      console.error(paint.red(`ledger: ${ledgerCheck.error}`));
+      blocked = true;
+    } else {
+      console.log(paint.dim(`ledger: ${ledgerCheck.count} entries, chain intact, ${Object.keys(progress.gates ?? {}).length} gate(s) cross-checked`));
+    }
+    if (blocked) process.exit(1);
+
     const only = flags.gate ? [String(flags.gate)] : null;
     const targets = Object.entries(progress.gates).filter(([id]) => !only || only.includes(id));
     if (targets.length === 0) fail("no gates recorded yet");
@@ -581,6 +696,8 @@ switch (command) {
       fail(`phase ${id} was never started. Run: pipeline phase start ${id}`);
     }
     const problems = [];
+    const specProblem = specDrift();
+    if (specProblem) problems.push(`spec drift: ${specProblem}`);
     for (const gate of spec.gates) {
       const g = progress.gates[gate];
       if (!g) problems.push(`${gate} has not been recorded (run: pipeline gate ${gate} …)`);
@@ -611,16 +728,21 @@ switch (command) {
     progress.phases[id] = { ...progress.phases[id], status: "done", at: new Date().toISOString() };
     progress.phase = nextPhase(id) ?? id;
     writeProgress(progress);
-    appendLedger(abs(cfg.ledger), {
-      phase: id,
-      gate: `P${id}`,
-      status: "passed",
-      command: `pipeline phase done ${id}`,
-      exitCode: 0,
-      commit: commitSha(),
-      filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
-      modelFamily: flags.model ?? null,
-    });
+    appendLedger(
+      abs(cfg.ledger),
+      {
+        phase: id,
+        gate: `P${id}`,
+        status: "passed",
+        command: `pipeline phase done ${id}`,
+        commandSource: "orchestrator",
+        exitCode: 0,
+        commit: commitSha(),
+        filesGivenToVerifier: flags.files ? String(flags.files).split(",").map((s) => s.trim()) : null,
+        modelFamily: flags.model ?? null,
+      },
+      { cwd: projectRoot },
+    );
     ok(`phase ${id} done.${nextPhase(id) ? ` Next: ${nextPhase(id)}` : ""}`);
     break;
   }
@@ -674,7 +796,20 @@ switch (command) {
   case "report": {
     const progress = readProgress();
     const ledger = verifyLedger(abs(cfg.ledger));
-    const entries = readLedger(abs(cfg.ledger));
+    let entries = [];
+    try {
+      entries = readLedger(abs(cfg.ledger));
+    } catch (error) {
+      warn(`ledger unreadable, report will treat it as empty: ${error.message}`);
+    }
+    const specFileAbs = abs(cfg.spec);
+    const hashFileAbs = abs(cfg.specHash);
+    const specProblemReport = specDrift();
+    const specLine = !fs.existsSync(hashFileAbs)
+      ? "**not frozen** — `pipeline freeze` has not run"
+      : specProblemReport
+        ? `**DRIFT** — ${specProblemReport}`
+        : `frozen at ${fs.readFileSync(hashFileAbs, "utf8").trim().split(/\s+/)[0].slice(0, 12)}…`;
     const gateRows = GATE_IDS.map((id) => {
       const g = progress.gates[id];
       if (!g) return `| ${id} | not evaluated | — | — | — |`;
@@ -726,6 +861,8 @@ switch (command) {
       `- commit: \`${commitSha() ?? "unknown"}\``,
       `- pipeline version: ${progress.pipelineVersion ?? cfg.pipelineVersion}`,
       `- phase: ${progress.phase ?? "none"}`,
+      `- spec: ${specLine}`,
+      `- diff base: \`${progress.baseCommit ?? "unset (protected-paths cannot see committed edits)"}\``,
       `- ledger: ${ledger.count} entries, chain ${ledger.ok ? "intact" : "**BROKEN**"}${ledger.ok ? "" : ` (${ledger.error})`}`,
       "",
       "## Gates",

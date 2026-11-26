@@ -60,7 +60,7 @@ node pipeline/bin/pipeline.mjs phase done 01
 | 05 tests | G5 | `gate G5 --builtin trace:freeze,trace:check,unit` |
 | 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` |
 | 07 QA | G7 | `gate G7 --builtin types,lint,unit,build` |
-| 08 red team | — | `phase done 08` (entrypoints + coverage + findings) |
+| 08 red team | G8 | `gate G8 --builtin entrypoints,coverage,findings` |
 | 09 patch | G9 | `gate G9 --builtin findings,coverage` |
 | 10 release | G10 | `report`, then `gate G10 --builtin ledger,progress` |
 | 11 deploy | G11 | `gate G11 --not-verified --reason … --human-command …` |
@@ -98,6 +98,7 @@ Gates that use them:
 |---|---|
 | G0 | `gate G0 --builtin ledger,selftests,sandbox` |
 | G7 | `gate G7 --builtin types,lint,unit,build,fuzz` |
+| G8 | `gate G8 --builtin entrypoints,coverage,findings,fuzz` |
 | G9 | `gate G9 --builtin findings,coverage,independence` |
 | G12 | `gate G12 --builtin metrics,calibrate` |
 

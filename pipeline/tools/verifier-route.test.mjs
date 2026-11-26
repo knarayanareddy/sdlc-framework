@@ -7,8 +7,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { familyOf, independence, candidateFamilies } from "./lib/families.mjs";
 import { appendLedger } from "./lib/ledger.mjs";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const route = path.join(here, "verifier-route.mjs");
 const indep = path.join(here, "independence.mjs");
 const repoRoot = path.resolve(here, "..", "..");

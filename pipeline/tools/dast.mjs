@@ -15,10 +15,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureDir, fail, ok, paint, parseArgs, readJson, writeJson } from "./lib/common.mjs";
 import { fromNuclei, fromSarif, fromSemgrep, fromZap, lead } from "./lib/leads.mjs";
+import { fileURLToPath } from "node:url";
 
 const { flags, positional } = parseArgs();
 const [command = "plan"] = positional;
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const TOOLS = [
   {

@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./entrypoints.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./entrypoints.mjs", import.meta.url));
 
 function fixture(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ep-"));

@@ -6,8 +6,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const sandbox = path.join(here, "sandbox.mjs");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "sbx-"));
 

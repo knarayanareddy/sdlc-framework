@@ -8,8 +8,9 @@ import path from "node:path";
 import http from "node:http";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const fuzz = path.join(here, "fuzz-api.mjs");
 
 function makeServer({ strict }) {

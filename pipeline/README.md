@@ -13,7 +13,7 @@ v1 was prose plus one regex tool. **v2 ships the missing mechanisms as programs*
 its own test. Nothing below needs a model until a prompt tells you to dispatch one.
 
 ```bash
-node pipeline/tools/run-selftests.mjs      # 10 test groups: no tool is trusted before its own test
+node pipeline/tools/run-selftests.mjs      # 17 test files + 1 selftest script: no tool is trusted before its own test
 node pipeline/tools/gate-ledger.mjs demo   # the G0 tamper test
 node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
 
@@ -37,8 +37,8 @@ node pipeline/bin/pipeline.mjs report
 | `tools/estimate.mjs` | R-03, R-10 | Chapman capture–recapture; refuses to guess from zero overlap |
 | `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED`, never green |
 | `tools/validate-progress.mjs` | R-15 | schema + invariants: `passed` needs exit 0, `NOT_VERIFIED` needs a reason and a human command |
-| `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family**, seals the envelope with a hash, and refuses a verdict that skips a claim or cites no evidence |
-| `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded) |
+| `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family** and seals the envelope with a hash. **Open defect (P2):** the prompt lists the files but not their contents, so a verifier cites `file:line` from memory — see `REVIEW-OF-SECOND-OPINION.md` F-01 |
+| `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded). **Open defect (P2):** it fails *open* when `builderFamily` is left at its `unknown` default — see `F-02` |
 | `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, isolated workdir, timeout and output cap; reports which controls it could not enforce; `profile`/`verify` ship and check a hardened compose file |
 | `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings |
 | `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei and fuzz output into one lead shape |

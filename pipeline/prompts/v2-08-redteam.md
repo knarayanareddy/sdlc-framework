@@ -5,6 +5,7 @@ Output: `docs/08-redteam/run-N/{architecture.md, entrypoints.json, scanner-leads
 Gate: feeds **G9**. Phase 08 completes when its three artifacts validate.
 
 ```bash
+node pipeline/bin/pipeline.mjs gate G8 --builtin entrypoints,coverage,findings
 node pipeline/bin/pipeline.mjs phase start 08
 node pipeline/tools/entrypoints.mjs --root . --out docs/08-redteam/run-1/entrypoints.json
 #   … hunt, verify, write the ledger and findings …
