@@ -259,18 +259,19 @@ let a reader tell the review's claims apart from the current state.
 
 | Finding | Status now |
 |---|---|
-| F-01 (which app is the repo) | README rewritten: the framework is the repo, the review app is named and documented, and it now serves the canonical `pipeline/` files instead of keeping copies. |
-| F-03 (no `test` script) | `test`, `test:watch` and `typecheck` added to the app's `package.json`. |
-| F-04 (tests need a live DB) | CI provisions Postgres 16 as a service, so the DB tests actually run on every push. |
-| F-05 (no CI) | `.github/workflows/pipeline.yml`: tool self-tests, ledger tamper test, the end-to-end demo, the traceability gate, and the app's typecheck/lint/tests/build. |
-| F-06 (G1 drift) | Both READMEs and the diagram now say what the prompt says: verified quotes, ≥5 competitors, ≥10 quotes, ≥3 rejected ideas. |
-| F-07 (no `LICENSE`) | MIT `LICENSE` added. |
-| F-10 (three copies of one prompt) | `comprehensive-development-lifecycle-prompts/content/prompts/` is gone; the app's allowlist points at `pipeline/prompts/`. `content/tools/` holds import shims, not copies. |
-| F-14 (no worked example) | `pipeline/examples/mini-app/` plus `pipeline/tools/demo.mjs`, which walks phases 00 → 12 and exits `RESULT: PASS`. |
+| F-01 (two apps, and the wrong one is documented) | README rewritten: the framework is the repo, the review app is named and documented, and it now serves the canonical `pipeline/` files instead of keeping copies. |
+| F-04 (the test suite can't be run as shipped) | `test`, `test:watch` and `typecheck` added to the app's `package.json`. |
+| F-03 (`next build` hard-fails without `DATABASE_URL`) | CI provisions Postgres 16 as a service, so the DB-backed steps actually run on every push. F-04's DB requirement is met by the same service. |
+| F-05 (no CI, in a repo whose thesis is mechanical gates) | `.github/workflows/pipeline.yml`: tool self-tests, ledger tamper test, the end-to-end demo, the traceability gate, and the app's typecheck/lint/tests/build. |
+| F-06 (three different G1 thresholds) | Both READMEs and the diagram now say what the prompt says: verified quotes, ≥5 competitors, ≥10 quotes, ≥3 rejected ideas. |
+| F-07 (MIT is claimed but not licensed) | MIT `LICENSE` added. |
+| §1 observation, unnumbered (three copies of one prompt) | `comprehensive-development-lifecycle-prompts/content/prompts/` is gone; the app's allowlist points at `pipeline/prompts/`. `content/tools/` holds import shims, not copies. |
+| F-14 (the framework ships no worked example) | `pipeline/examples/mini-app/` plus `pipeline/tools/demo.mjs`, which walks phases 00 → 12 and exits `RESULT: PASS`. |
 
-**Not fixed, and deliberately so:** F-02 (the repo still contains the starter scaffold) and
-F-13 (no root `package.json`) are product decisions, not pipeline-layer work. F-11's remaining
-item — the baseline `sha` — is untouched; the v2 baseline is a different file with a different
+**Not fixed, and deliberately so:** F-02 (the root page has no graceful degradation) and F-13 (the
+CSP would fail the framework's own phase 04) are product decisions, not pipeline-layer work, and so
+are the two unnumbered §1 observations (the starter scaffold at the root, the absent root
+`package.json`). F-11's remaining item — the baseline `sha` — is untouched; the v2 baseline is a different file with a different
 job (`--check-baseline`), and it does record a content hash.
 
 **The four layers that were "specified, not built" are now built and tested** (see
