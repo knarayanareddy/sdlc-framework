@@ -36,7 +36,12 @@ for (const check of checks) {
   process.stdout.write(`${check.name.padEnd(10)} `);
   const res = run(check.cmd, { timeout: 600_000 });
   const combined = `${res.stderr}\n${res.stdout}`;
-  const toolMissing = res.code === 127 || (res.code !== 0 && MISSING_TOOL.test(res.stderr.split("\n")[0] ?? "") && combined.length < 2000);
+  // Only a genuinely absent binary may be downgraded, and only when the check says it is
+  // optional. `trace` is mandatory: trace-check-v2 exiting 2 with "spec not found" used to
+  // match /not found/ and be recorded as "tool unavailable" — a hard failure laundered into
+  // a yellow (F-13). `check.optional` was declared and never read.
+  const firstErrLine = res.stderr.split("\n")[0] ?? "";
+  const toolMissing = res.code === 127 || (check.optional === true && res.code !== 0 && MISSING_TOOL.test(firstErrLine) && combined.length < 2000);
   const status = res.code === 0 ? "pass" : toolMissing ? "NOT_VERIFIED" : "fail";
   results.push({ name: check.name, cmd: check.cmd, status, exitCode: res.code, ms: res.durationMs, tail: combined.trim().split("\n").slice(-6).join("\n") });
   const label = status === "pass" ? paint.green("pass") : status === "fail" ? paint.red("FAIL") : paint.yellow("NOT_VERIFIED");
@@ -79,5 +84,16 @@ if (logPath) {
 }
 
 const bad = failed.length > 0 || (strict && notVerified.length > 0);
-console.log(bad ? "RESULT: FAIL" : notVerified.length ? "RESULT: PASS (with NOT_VERIFIED checks)" : "RESULT: PASS");
-process.exit(bad ? 1 : 0);
+if (bad) {
+  console.log("RESULT: FAIL");
+  process.exit(1);
+}
+if (notVerified.length) {
+  // A tripwire that evaluated nothing is not a pass: exit 3 so `pipeline gate` records
+  // NOT_VERIFIED with the command a human must run, instead of a green it did not earn.
+  console.log(paint.yellow(`${notVerified.length} check(s) could not be evaluated, and nothing failed`));
+  console.log("RESULT: NOT_VERIFIED");
+  for (const r of notVerified) console.log(`human command: ${r.cmd}`);
+  process.exit(3);
+}
+console.log("RESULT: PASS");

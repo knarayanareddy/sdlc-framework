@@ -22,6 +22,14 @@ const units = Array.isArray(ledger.units) ? ledger.units : [];
 const byId = new Map(units.map((u) => [u.id, u]));
 const problems = [];
 
+// Zero entry points is not "everything covered": it means the enumerator found nothing, so
+// the coverage claim has no subject (F-10).
+if (!Array.isArray(entrypoints) || entrypoints.length === 0) {
+  console.log(paint.yellow("NOT_VERIFIED: entrypoints.json lists no entry points, so nothing was covered"));
+  console.log(`human command: node pipeline/tools/entrypoints.mjs --root <the app directory> --out ${entryPath}`);
+  process.exit(3);
+}
+
 for (const ep of entrypoints) {
   const unit = byId.get(ep.id);
   if (!unit) {
@@ -35,6 +43,15 @@ for (const ep of entrypoints) {
   } else {
     problems.push(`unexamined: ${ep.id} has status "${unit.status}"`);
   }
+}
+
+// Units the enumerator did not list are still claims about work: an unexamined or
+// unattributed extra unit must not pass just because it is not an entry point.
+for (const unit of units) {
+  if (entrypoints.some((e) => e.id === unit.id)) continue;
+  if (unit.status === "examined" && !unit.hunter) problems.push(`unattributed: ${unit.id} is "examined" with no hunter id`);
+  else if (unit.status === "excluded" && (!unit.reason || String(unit.reason).trim().length < 8)) problems.push(`unjustified: ${unit.id} is "excluded" without a written reason`);
+  else if (unit.status !== "examined" && unit.status !== "excluded") problems.push(`unexamined: ${unit.id} has status "${unit.status}"`);
 }
 
 const examined = units.filter((u) => u.status === "examined").length;

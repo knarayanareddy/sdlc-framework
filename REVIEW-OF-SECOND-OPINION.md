@@ -392,3 +392,40 @@ Still open, in order: **P1** (`dast`/`fuzz`/`tripwire`/`entrypoints`/`sandbox` f
 codes; `--require-all` still executes before refusing), **P2** (the verifier never sees the files;
 independence fails open), **P3** (`--allow-uncovered` is still hardcoded in `trace:check`). Those
 are exactly the four findings that `pipeline.test.mjs` does *not* yet cover.
+
+## 12 · P1 landed — the fail-closed floor (2026-11-26)
+
+Scope approved by the owner ("P1 next"). Version `2.2.0 → 2.3.0`, because exit-code semantics
+changed for six tools. Every row below was reproduced at `50b57e4` before it was fixed, and each one
+now has a named test in the tool's own `*.test.mjs`, so it cannot come back silently.
+
+| # | The bypass at `50b57e4` | What it does now | Test |
+|---|---|---|---|
+| F-05 | `dast run` counted a scanner as `ran:` when its artifact existed, even when the scan failed; "ran but produced no artifact" was also `ran: true`, so a dead target with nothing installed said `RESULT: RAN` | a scan is `ran` only if it produced an artifact **that parses**; the `.zap/report_json.json` fallback is scoped to ZAP, which used to let a failed nuclei run ingest ZAP's report; nothing parseable → `RESULT: NOT_VERIFIED`, exit 3, with the install command for each missing scanner | `dast.test.mjs` · "no scanner produced a parseable artifact, so nothing counts as `ran`" |
+| B-02 | schemathesis was declared `format: "junit"` and `leadsFrom()` had no `junit` case: its leads silently vanished while the tool reported `ran` | `fromJunit()` in `lib/leads.mjs`; `failure` → medium, `error` → high; `detectFormat` recognises `<testsuite`/`<testcase`; a `--format` that does not match the file is `NOT_VERIFIED`, not a stack trace | `dast.test.mjs` · "schemathesis junit output is parsed, not silently dropped" |
+| F-09 | a fuzz run in which **every** case was skipped (no credential in the env) printed `RESULT: CLEAN` | skipped cases are recorded; zero executed cases → `RESULT: NOT_VERIFIED`, exit 3, naming the unset variables and the exact `VAR=<token> node …` to run | `fuzz-api.test.mjs` · "a run where every case was skipped is NOT_VERIFIED, not CLEAN" |
+| F-06 | `wrong-type` was only a violation when the contract happened to say `unknownFields: "reject"`, and `.find()` fuzzed only the first numeric field per endpoint | every numeric field is fuzzed, and a wrong type is a violation regardless of the unknown-field policy | `fuzz-api.test.mjs` · "every numeric field in the body is fuzzed, not just the first" |
+| F-13 | `tripwire` downgraded **any** check whose stderr matched `/not found/` to "tool unavailable" — `trace-check-v2` exiting 2 with "spec not found" became a yellow — and a `NOT_VERIFIED`-only run exited 0, i.e. green | `optional: true` (declared and never read) is now the only licence to downgrade; a mandatory check that cannot run **fails**; `NOT_VERIFIED` exits 3 and prints the human command | `tripwire.test.mjs` · "a mandatory check is never downgraded to NOT_VERIFIED", "a missing tool is NOT_VERIFIED, which is not a pass" |
+| F-10 | `entrypoints` only failed on zero findings when `--out` was absent: with `--out` it warned and exited 0, and `--root .` enumerated the pipeline's own tools as application surface; `fetch(\`http://${host}\`)` was invisible to the SSRF rule | zero entry points is `NOT_VERIFIED`, exit 3, with or without `--out`; `pipeline/` is excluded; template-literal fetches are SSRF surfaces | `entrypoints.test.mjs` · three tests |
+| — | `coverage-gate` accepted an empty entry-point list as trivially "fully covered", and ignored units the enumerator had not listed | empty list → `NOT_VERIFIED`, exit 3; extra units must be examined with a hunter or excluded with a reason | `coverage-gate.test.mjs` · two tests |
+| F-11 | `sandbox run --require-all` executed the command and *then* refused to call the run sandboxed; `--memory-mb` composed as `timeout -s KILL N ulimit -v X; cmd`, so `timeout` died on a shell builtin and the command ran with **no** rlimit while both controls were reported applied; `workdirIsolated` was `true` while `--cwd` pointed at the real project | `--require-all` refuses **before** `spawnSync` (records `executed: false`); the controls compose as `timeout -s KILL N sh -c 'ulimit -v X; exec …'`; `workdirIsolated = !flags.cwd`; the temp workdir is removed even with `--cwd`; a startup death under a small rlimit explains itself (`ulimit -v` counts virtual address space) | `sandbox.test.mjs` · "the memory rlimit is enforced, not merely reported", "the timeout kills the whole process group, not just the wrapper", "--require-all refuses to execute …" |
+| F-12 | the shipped compose profile mounted a `tmpfs` at `/work`, shadowing the read-only bind mount, so the container saw an empty directory | the tmpfs is gone; `/work` is the bind mount | `sandbox.test.mjs` (`profile`/`verify`) |
+| F-17 | `sandbox --cmd "sh -c '…'"` was double-parsed | one shell owns parsing; quoting is tested by the group-kill test above | `sandbox.test.mjs` |
+| F-18 | `pipeline gate G3` (and G4) suggested `--builtin manual`, which resolves to nothing and then errors with "nothing to run" | G3/G4 suggest the real call: `gate G3 --evidence docs/03-design/design-brief.md,docs/03-design/tokens.json` | `pipeline.test.mjs` |
+
+**What is verified, not just claimed.** `run-selftests.mjs` → 17 files + trace selftest, 2/2 groups;
+`node --test pipeline/tools/*.test.mjs` → **150 tests, 0 failing**; `demo.mjs` → PASS 00→12. The
+process-group kill is asserted by a probe file that a grandchild writes 2 s after a 700 ms timeout —
+it must still be absent.
+
+**Residual, stated rather than hidden.** `ulimit -v` bounds virtual address space, so a JS runtime
+needs a limit well above its reservation (`--memory-mb 4096`, not 256); the tool now says this at the
+moment a command dies at startup. Network denial still depends on `unshare -n`, and `--require-all`
+is the only thing that turns that dependency into a refusal — without it, an unenforced control is
+recorded as `NOT_VERIFIED` in the output and the run continues.
+
+Still open, in the order I would take them: **P2** (`verifier-route` lists the files but not their
+contents, so a verifier cites `file:line` from memory — F-01; `independence` fails *open* when
+`builderFamily` is left at `unknown` — F-02), then **P3** (`--allow-uncovered` is hardcoded in
+`trace:check`), then the §5 substance gates. P2 is the one that matters most: P0 and P1 make the
+pipeline refuse to *lie*, but the verifier still cannot see what it is verifying.

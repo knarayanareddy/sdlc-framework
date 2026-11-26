@@ -49,8 +49,10 @@ export const GATE_SUGGESTIONS = Object.freeze({
   G0: ["ledger", "protected"],
   G1: ["quotes"],
   G2: ["trace:structure"],
-  G3: ["manual"],
-  G4: ["manual"],
+  // G3/G4 are evidence gates: `--builtin manual` resolves to nothing and then errors
+  // with "nothing to run" (F-18). Suggest the real command instead.
+  G3: ["evidence:docs/03-design/design-brief.md,docs/03-design/tokens.json"],
+  G4: ["evidence:docs/04-architecture/threat-model.md,docs/04-architecture/authz-matrix.md"],
   G5: ["trace:freeze", "trace:check", "unit"],
   G7: ["types", "lint", "unit", "build"],
   G8: ["entrypoints", "coverage", "findings"],

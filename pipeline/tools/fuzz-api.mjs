@@ -19,6 +19,7 @@ const requestTimeout = Number(flags.timeout ?? 5000);
 if (!fs.existsSync(contractPath)) {
   console.log(paint.yellow(`NOT_VERIFIED: no contract at ${contractPath}`));
   console.log("the contract is the spec's API section in machine form; see pipeline/templates/api-contract.example.json");
+  console.log(`human command: cp pipeline/templates/api-contract.example.json ${contractPath} && node pipeline/tools/fuzz-api.mjs --contract ${contractPath} --base http://127.0.0.1:3000`);
   process.exit(3);
 }
 
@@ -111,8 +112,12 @@ function casesFor(endpoint) {
     const body = sampleBody(endpoint);
     cases.push({ id: "unknown-fields", kind: "unknown-field", body: { ...body, __probe: 1, isAdmin: true, role: "admin" } });
     const fields = endpoint.body?.fields ?? {};
-    const typed = Object.entries(fields).find(([, s]) => s?.type === "integer" || s?.type === "number");
-    if (typed) cases.push({ id: `wrong-type:${typed[0]}`, kind: "wrong-type", field: typed[0], body: { ...body, [typed[0]]: "not-a-number" } });
+    // .find() fuzzed only the first numeric field per endpoint, so every other number
+    // in the body went untested.
+    const typedFields = Object.entries(fields).filter(([, s]) => s?.type === "integer" || s?.type === "number");
+    for (const [name] of typedFields) {
+      cases.push({ id: `wrong-type:${name}`, kind: "wrong-type", field: name, body: { ...body, [name]: "not-a-number" } });
+    }
     cases.push({ id: "oversized", kind: "oversized", body: { ...body, blob: PAYLOADS.huge } });
     const strField = Object.entries(fields).find(([, s]) => !s?.type || s.type === "string")?.[0];
     if (strField) {
@@ -134,11 +139,13 @@ function casesFor(endpoint) {
 
 const violations = [];
 const observations = [];
+const skipped = [];
 const add = (v) => violations.push(v);
 
 function judge(endpoint, c, res) {
   const where = `${String(endpoint.method).toUpperCase()} ${endpoint.path}#${c.id}`;
   if (res.skipped) {
+    skipped.push({ case: where, why: res.why });
     observations.push({ case: where, note: `skipped: ${res.why}` });
     return;
   }
@@ -160,7 +167,7 @@ function judge(endpoint, c, res) {
   if (c.kind === "oversized" && klass === "ok") {
     add({ rule: "missing-body-limit", severity: "high", case: where, detail: `a 2 MB body was accepted with ${res.status}`, status: res.status });
   }
-  if (c.kind === "wrong-type" && klass === "ok" && rejectUnknown) {
+  if (c.kind === "wrong-type" && klass === "ok") {
     add({ rule: "unvalidated-type", severity: "medium", case: where, detail: `"${c.field}" accepted a string where the contract says number`, status: res.status });
   }
   if (c.kind === "injection" && c.id === "payload:xss" && /text\/html/i.test(res.contentType) && res.text.includes(PAYLOADS.xss)) {
@@ -213,7 +220,8 @@ const report = {
   violations,
   byRule,
   observations,
-  result: violations.length ? "VIOLATIONS" : "CLEAN",
+  skipped,
+  result: violations.length ? "VIOLATIONS" : skipped.length ? "NOT_VERIFIED" : "CLEAN",
   at: new Date().toISOString(),
 };
 
@@ -239,9 +247,23 @@ console.log(`${report.cases} cases across ${report.endpoints} endpoint(s) agains
 for (const [rule, n] of Object.entries(byRule)) console.log(`  ${paint.yellow(rule)} × ${n}`);
 for (const v of violations.slice(0, 10)) console.log(`  - [${v.severity}] ${v.case}: ${v.detail}`);
 if (violations.length > 10) console.log(`  … ${violations.length - 10} more in ${out}`);
-if (!violations.length) ok(`RESULT: CLEAN — no violation of the contract's rejection rules`);
-else {
+if (violations.length) {
   warn(`${violations.length} violation(s). These are LEADS for a hunter, not findings: confirm before recording.`);
+  if (skipped.length) console.log(paint.yellow(`note: ${skipped.length} case(s) were skipped, so coverage is partial`));
   console.log("RESULT: VIOLATIONS");
+  process.exit(1);
 }
-process.exit(violations.length ? 1 : 0);
+
+// Every endpoint that needs a credential we do not have was skipped, and a run that
+// skipped everything used to print RESULT: CLEAN — the worst possible false green.
+if (skipped.length) {
+  const envs = [...new Set(skipped.map((x) => (x.why.match(/^([A-Z0-9_]+) is not set/) ?? [])[1]).filter(Boolean))];
+  console.log(paint.yellow(`RESULT: NOT_VERIFIED — ${skipped.length} of ${report.cases} case(s) were skipped, so "no violations" is not a finding`));
+  for (const env of envs) console.log(`  unset: ${env}`);
+  for (const x of skipped.slice(0, 5)) console.log(`  skipped: ${x.case} (${x.why})`);
+  const exports = envs.length ? envs.map((e) => `${e}=<token>`).join(" ") : "<see the skipped cases above>";
+  console.log(`human command: ${exports} node pipeline/tools/fuzz-api.mjs --contract ${contractPath} --base ${base}`);
+  process.exit(3);
+}
+
+ok(`RESULT: CLEAN — every case in the contract was executed and none violated the rejection rules`);

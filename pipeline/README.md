@@ -31,17 +31,17 @@ node pipeline/bin/pipeline.mjs report
 | `tools/gate-ledger.mjs` | R-02 | append-only hash chain; `demo` proves one edited line breaks it |
 | `tools/protected-paths.mjs` | R-02 | tests are append-only; the agent cannot edit the tool that gates it |
 | `tools/quote-verify.mjs` | R-05 | snapshots every source and requires the quote to be a substring |
-| `tools/entrypoints.mjs` | R-08 | enumerates every route, action, env read, raw SQL and outbound fetch |
-| `tools/coverage-gate.mjs` | R-08 | enumerated entry points must appear in the coverage ledger, examined or excluded with a reason |
+| `tools/entrypoints.mjs` | R-08 | enumerates every route, action, env read, raw SQL and outbound fetch; **zero entry points is `NOT_VERIFIED`, exit 3** — even with `--out` |
+| `tools/coverage-gate.mjs` | R-08 | enumerated entry points must appear in the coverage ledger, examined or excluded with a reason; an empty entry-point list is `NOT_VERIFIED`, and units the enumerator did not list are held to the same bar |
 | `tools/validate-findings.mjs` | R-09 | evidence tiers T1/T2/T3, a real tagged repro test, T3 capped at Medium, a DIFF run cannot claim clean |
 | `tools/estimate.mjs` | R-03, R-10 | Chapman capture–recapture; refuses to guess from zero overlap |
-| `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED`, never green |
+| `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED` (exit 3), never green, and only a check marked `"optional": true` may be downgraded — a mandatory check that says "not found" fails |
 | `tools/validate-progress.mjs` | R-15 | schema + invariants: `passed` needs exit 0, `NOT_VERIFIED` needs a reason and a human command |
 | `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family** and seals the envelope with a hash. **Open defect (P2):** the prompt lists the files but not their contents, so a verifier cites `file:line` from memory — see `REVIEW-OF-SECOND-OPINION.md` F-01 |
 | `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded). **Open defect (P2):** it fails *open* when `builderFamily` is left at its `unknown` default — see `F-02` |
-| `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, isolated workdir, timeout and output cap; reports which controls it could not enforce; `profile`/`verify` ship and check a hardened compose file |
-| `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings |
-| `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei and fuzz output into one lead shape |
+| `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, its own workdir, timeout and output cap; the memory rlimit and the timeout compose correctly (`timeout … sh -c 'ulimit -v …; cmd'`); `--require-all` refuses **before** executing when a control cannot be enforced; `profile`/`verify` ship and check a hardened compose file |
+| `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings; a run in which every case was skipped (missing credentials) is `NOT_VERIFIED`, not `CLEAN` |
+| `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei, junit and fuzz output into one lead shape; a scan counts as `ran` only when it produced a parseable artifact — otherwise the run is `NOT_VERIFIED`, exit 3 |
 | `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, recall per class, calibrated/inconclusive verdict that `report` has to print |
 | `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
 

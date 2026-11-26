@@ -90,3 +90,24 @@ test("a missing input file is a failure, not a pass", () => {
   assert.equal(res.status, 1);
   assert.match(res.stderr, /no entrypoints file/);
 });
+
+// ---- P1 · coverage with no subject, or with extra unexamined claims ---------------------
+test("an empty entrypoints file is NOT_VERIFIED, not full coverage", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cov-"));
+  const e = path.join(dir, "entrypoints.json");
+  const c = path.join(dir, "coverage-ledger.json");
+  fs.writeFileSync(e, JSON.stringify({ entrypoints: [] }));
+  fs.writeFileSync(c, JSON.stringify({ units: [] }));
+  const res = spawnSync("node", [TOOL, "--entrypoints", e, "--ledger", c], { encoding: "utf8" });
+  assert.equal(res.status, 3);
+  assert.match(res.stdout, /NOT_VERIFIED: entrypoints.json lists no entry points/);
+  assert.match(res.stdout, /human command/);
+});
+
+test("a unit the enumerator did not list is still held to the same bar", () => {
+  const { status, out } = gate({
+    units: [unit("route:GET /api/items", "examined"), unit("route:POST /api/items", "examined"), unit("page:/dashboard", "examined"), unit("subsystem:billing", "unexamined")],
+  });
+  assert.equal(status, 1);
+  assert.match(out.problems.join("\n"), /unexamined: subsystem:billing/);
+});

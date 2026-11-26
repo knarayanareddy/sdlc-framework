@@ -55,7 +55,11 @@ const add = (entry) => {
   if (!found.has(entry.id)) found.set(entry.id, entry);
 };
 
-const files = walk(root).filter((f) => CODE.test(f) && !IGNORE_FILE.test(f));
+// `--root .` inside a repo that contains the pipeline itself used to enumerate the
+// pipeline's own tools as application entry points.
+const files = walk(root)
+  .filter((f) => path.relative(root, f).split(path.sep)[0] !== "pipeline")
+  .filter((f) => CODE.test(f) && !IGNORE_FILE.test(f));
 
 for (const abs of files) {
   const rel = path.relative(root, abs).split(path.sep).join("/");
@@ -113,8 +117,10 @@ for (const abs of files) {
     add({ id: `rawSql:${rel}:${lineOf(text, m.index ?? 0)}`, kind: "rawSql", file: rel, line: lineOf(text, m.index ?? 0), detail: m[1] });
   }
 
-  // 7. Outbound fetches with a non-literal URL (SSRF surface).
-  for (const m of text.matchAll(/\bfetch\(\s*([^)"'\s`])/g)) {
+  // 7. Outbound fetches with a non-literal URL (SSRF surface). Backticks were excluded,
+  // so the most common SSRF shape — fetch(`http://${userHost}/api`) — was invisible.
+  const fetchRe = /\bfetch\(\s*(?:`[^`]*\$\{|[^)"'\s`])/g;
+  for (const m of text.matchAll(fetchRe)) {
     add({ id: `fetch:${rel}:${lineOf(text, m.index ?? 0)}`, kind: "outboundFetch", file: rel, line: lineOf(text, m.index ?? 0), detail: "non-literal URL" });
   }
 }
@@ -129,7 +135,9 @@ if (outPath) {
   console.log(`entrypoints: ${entrypoints.length} → ${path.relative(process.cwd(), outPath) || outPath}`);
   console.log(Object.entries(counts).map(([k, v]) => `  ${k}: ${v}`).join("\n"));
   if (entrypoints.length === 0) {
-    console.log(paint.yellow("warn: no entry points found; point --root at the app directory"));
+    console.log(paint.yellow("NOT_VERIFIED: no entry points found, so coverage cannot be claimed"));
+    console.log(`human command: node pipeline/tools/entrypoints.mjs --root <the app directory> --out ${path.relative(process.cwd(), outPath) || outPath}`);
+    process.exit(3);
   }
 } else {
   console.log(JSON.stringify(payload, null, 2));

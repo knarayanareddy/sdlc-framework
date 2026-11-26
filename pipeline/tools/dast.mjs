@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureDir, fail, ok, paint, parseArgs, readJson, writeJson } from "./lib/common.mjs";
-import { fromNuclei, fromSarif, fromSemgrep, fromZap, lead } from "./lib/leads.mjs";
+import { fromJunit, fromNuclei, fromSarif, fromSemgrep, fromZap, lead } from "./lib/leads.mjs";
 import { fileURLToPath } from "node:url";
 
 const { flags, positional } = parseArgs();
@@ -92,8 +92,10 @@ function cmdPlan() {
   console.log(`\nrun with the built-in fuzzer regardless: node pipeline/tools/dast.mjs run --target <url> --contract api-contract.json`);
 }
 
-function detectFormat(file, text) {
-  if (flags.format && flags.format !== "auto") return String(flags.format);
+function detectFormat(file, text, hint) {
+  const forced = hint && hint !== "auto" ? String(hint) : null;
+  if (forced) return forced;
+  if (/^\s*<\?xml|<testsuite\b/i.test(text)) return "junit";
   if (/^\s*\{/.test(text)) {
     try {
       const j = JSON.parse(text);
@@ -111,8 +113,19 @@ function detectFormat(file, text) {
 
 function leadsFrom(file, format) {
   const text = fs.readFileSync(file, "utf8");
-  const fmt = detectFormat(file, text);
+  const fmt = detectFormat(file, text, format);
+  try {
+    return parseLeads(text, fmt, file);
+  } catch {
+    // A forced --format that does not match the file must fail closed, not crash.
+    return { fmt: "unknown", leads: [] };
+  }
+}
+
+function parseLeads(text, fmt, file) {
   switch (fmt) {
+    case "junit":
+      return { fmt, leads: fromJunit(text) };
     case "semgrep":
       return { fmt, leads: fromSemgrep(JSON.parse(text)) };
     case "sarif":
@@ -129,7 +142,9 @@ function leadsFrom(file, format) {
       };
     }
     default:
-      return { fmt, leads: [] };
+      // Never report "0 leads" for output we could not parse: that is the difference
+      // between "the scanner found nothing" and "we did not look".
+      return { fmt: "unknown", leads: [] };
   }
 }
 
@@ -187,19 +202,32 @@ function cmdRun() {
     fs.writeFileSync(log, `${cmd}\n\n${res.stdout ?? ""}\n${res.stderr ?? ""}`);
 
     // Scanners use non-zero exit codes for "findings", which is not "failed to run".
-    const found = [path.join(outDir, tool.artifact), tool.artifact, path.join(".zap", "report_json.json")].find((p) => fs.existsSync(p));
+    // "ran" means: an artifact exists AND we could parse it. An unparseable artifact is
+    // not a clean scan — it is a scan we could not read. Counting it as `ran` turned a
+    // dead target into RESULT: RAN (F-05).
+    const candidates = [path.join(outDir, tool.artifact), tool.artifact];
+    // A stale .zap/report_json.json used to be picked up as the output of *any* scanner,
+    // so a failed nuclei run silently ingested ZAP's report.
+    if (tool.name === "zap-baseline") candidates.push(path.join(".zap", "report_json.json"));
+    const found = candidates.find((p) => fs.existsSync(p));
     if (!found) {
-      results.push({ name: tool.name, ran: true, exitCode: res.status, why: `ran but produced no ${tool.artifact}; lead extraction NOT_VERIFIED`, log });
+      results.push({
+        name: tool.name,
+        ran: false,
+        exitCode: res.status,
+        why: `produced no ${tool.artifact} (exit ${res.status ?? "?"}); lead extraction NOT_VERIFIED`,
+        log,
+      });
       continue;
     }
     const { fmt, leads } = leadsFrom(found, tool.format);
-    if (!leads.length && fmt === "unknown") {
-      results.push({ name: tool.name, ran: true, exitCode: res.status, why: "output format not recognised", log });
+    if (fmt === "unknown") {
+      results.push({ name: tool.name, ran: false, exitCode: res.status, why: `${found} is in a format this tool cannot parse`, log });
       continue;
     }
     const leadsFile = path.join(outDir, "scanner-leads.json");
     appendLeads(leadsFile, leads);
-    results.push({ name: tool.name, ran: true, exitCode: res.status, leads: leads.length, artifact: found, log });
+    results.push({ name: tool.name, ran: true, exitCode: res.status, format: fmt, leads: leads.length, artifact: found, log });
   }
 
   const ran = results.filter((r) => r.ran).length;
@@ -221,7 +249,12 @@ function cmdRun() {
   console.log(`written: ${path.join(outDir, "dast.json")}`);
 
   if (ran === 0) {
-    console.log(paint.yellow("RESULT: NOT_VERIFIED — no dynamic analysis was executed; the report must say so"));
+    console.log(paint.yellow("RESULT: NOT_VERIFIED — no dynamic analysis produced a parseable artifact; the report must say so"));
+    const installs = results.filter((r) => /not installed/.test(r.why ?? "")).map((r) => r.why);
+    if (installs.length) for (const line of installs) console.log(`  missing: ${line}`);
+    console.log(
+      `human command: install one scanner, then: node pipeline/tools/dast.mjs run --target ${target || "<url>"} --contract ${contract?.path ?? "api-contract.json"}`,
+    );
     process.exit(3);
   }
   ok(`RESULT: RAN — ${ran} tool(s) produced output`);

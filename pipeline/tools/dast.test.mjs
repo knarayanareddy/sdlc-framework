@@ -156,3 +156,50 @@ test("run against a dead target records what did not happen", () => {
   assert.match(r.stdout, /RESULT: NOT_VERIFIED/);
   assert.equal(r.status, 3);
 });
+
+// ---- P1 · a scan that produced nothing readable is not a scan that ran -------------------
+test("schemathesis junit output is parsed, not silently dropped", () => {
+  // The tool declared `format: "junit"` and had no parser, so its leads vanished while the
+  // run was still reported as `ran` (B-02). A passing testcase must not become a lead.
+  const d = tmp();
+  const junit = path.join(d, "schemathesis.xml");
+  fs.writeFileSync(
+    junit,
+    `<?xml version="1.0"?><testsuite name="schemathesis">
+<testcase name="test_items_500" classname="items"><failure message="Server error: 500">trace</failure></testcase>
+<testcase name="test_create_item" classname="items"><error message="Undocumented status 418">trace</error></testcase>
+<testcase name="test_ok" classname="items"/>
+</testsuite>`,
+  );
+  const out = path.join(d, "leads.json");
+  const r = cli(["leads", "--from", junit, "--out", out]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /junit: 2 lead\(s\)/);
+  const { leads } = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(leads.length, 2);
+  assert.deepEqual(leads.map((l) => l.severity).sort(), ["high", "medium"]);
+  assert.match(leads.map((l) => l.text).join("\n"), /Server error: 500/);
+});
+
+test("a forced --format that does not match the file is NOT_VERIFIED, not a crash", () => {
+  const d = tmp();
+  const junit = path.join(d, "report.xml");
+  fs.writeFileSync(junit, `<?xml version="1.0"?><testsuite><testcase name="a"/></testsuite>`);
+  const r = cli(["leads", "--from", junit, "--format", "zap", "--out", path.join(d, "leads.json")]);
+  assert.equal(r.status, 3);
+  assert.match(r.stdout, /could not recognise the output format/);
+  assert.match(r.stdout, /human command/);
+});
+
+test("no scanner produced a parseable artifact, so nothing counts as `ran`", () => {
+  // B-01: "ran but produced no artifact" was recorded as ran: true, so a dead target with
+  // no scanners installed still produced RESULT: RAN.
+  const d = tmp();
+  const r = cli(["run", "--target", "http://127.0.0.1:9", "--out", path.join(d, "floor")]);
+  assert.equal(r.status, 3);
+  const summary = JSON.parse(fs.readFileSync(path.join(d, "floor", "dast.json"), "utf8"));
+  assert.equal(summary.ran, 0, JSON.stringify(summary.results, null, 2));
+  assert.equal(summary.tools.length, 4);
+  for (const res of summary.tools) assert.equal(res.ran, false, `${res.name} claimed to have run`);
+  assert.match(r.stdout, /human command/);
+});

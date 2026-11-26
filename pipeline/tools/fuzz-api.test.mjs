@@ -186,3 +186,61 @@ test("the report always records how many cases ran", async () => {
   assert.ok(report.cases >= 10, `only ${report.cases} cases`);
   assert.ok(report.observations.length >= report.cases - 1);
 });
+
+// ---- P1 · "we skipped everything" used to print CLEAN ----------------------------------
+test("a run where every case was skipped is NOT_VERIFIED, not CLEAN", async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "fuzz-"));
+  dirs.push(d);
+  const file = path.join(d, "api-contract.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      baseUrl: `http://127.0.0.1:${await port(true)}`,
+      endpoints: [
+        {
+          method: "POST",
+          path: "/api/items",
+          auth: { env: "P1_TEST_MISSING_TOKEN" },
+          body: { unknownFields: "reject", fields: { title: { type: "string", maxLength: 200 }, quantity: { type: "integer", min: 1 } } },
+        },
+      ],
+    }),
+  );
+  delete process.env.P1_TEST_MISSING_TOKEN;
+  const out = path.join(d, "fuzz.json");
+  const r = await runFuzz(file, ["--out", out]);
+  // Skipping is not testing: zero executed cases with zero violations is not evidence of
+  // safety, so it must not be a green (F-09).
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /NOT_VERIFIED/);
+  assert.match(r.stdout, /P1_TEST_MISSING_TOKEN/);
+  assert.match(r.stdout, /human command/);
+  const report = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(report.result, "NOT_VERIFIED");
+  assert.ok(report.skipped.length >= 1);
+});
+
+test("every numeric field in the body is fuzzed, not just the first", async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "fuzz-"));
+  dirs.push(d);
+  const file = path.join(d, "api-contract.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      baseUrl: `http://127.0.0.1:${await port(true)}`,
+      endpoints: [
+        {
+          method: "POST",
+          path: "/api/items",
+          body: { unknownFields: "reject", fields: { title: { type: "string" }, quantity: { type: "integer" }, price: { type: "number" } } },
+        },
+      ],
+    }),
+  );
+  const out = path.join(d, "fuzz.json");
+  await runFuzz(file, ["--out", out]);
+  const report = JSON.parse(fs.readFileSync(out, "utf8"));
+  const wrongType = report.observations.filter((o) => /wrong-type:/.test(o.case)).map((o) => o.case);
+  assert.ok(wrongType.some((c) => c.endsWith("quantity")), wrongType.join("\n"));
+  assert.ok(wrongType.some((c) => c.endsWith("price")), wrongType.join("\n"));
+});

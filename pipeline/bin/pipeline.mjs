@@ -45,7 +45,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.2.0",
+  pipelineVersion: "2.3.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -539,6 +539,12 @@ switch (command) {
     }
 
     if (cmds.length === 0) {
+      const suggestion = (GATE_SUGGESTIONS[gate] ?? [])[0] ?? "";
+      if (suggestion.startsWith("evidence:")) {
+        console.log(`gate ${gate} is an evidence gate. Suggested:`);
+        console.log(`  node pipeline/bin/pipeline.mjs gate ${gate} --evidence ${suggestion.slice("evidence:".length)}`);
+        fail("nothing to run. Use --evidence <files>, --builtin, or --not-verified --reason … --human-command …");
+      }
       console.log(`gate ${gate} has no mechanical check by default. Suggested: --builtin ${(GATE_SUGGESTIONS[gate] ?? []).join(",")}`);
       fail("nothing to run. Use --builtin, --cmd, --evidence or --not-verified --reason … --human-command …");
     }

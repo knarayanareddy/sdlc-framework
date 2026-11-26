@@ -98,14 +98,22 @@ test("network denial is applied or declared NOT_VERIFIED, never assumed", () => 
   }
 });
 
-test("--require-all refuses to call an unverified execution sandboxed", () => {
+test("--require-all refuses to execute when a required control cannot be enforced", () => {
   const caps = JSON.parse(run(["check", "--json"]).stdout);
-  const r = run(["run", "--deny-network", "--require-all", "--cmd", "echo hi"]);
-  if (caps.networkNamespace.available) assert.equal(r.status, 0, "netns is available, so nothing is unverified");
-  else {
-    assert.equal(r.status, 3);
-    assert.match(r.stderr, /refusing to call this execution sandboxed/);
+  const dir = tmp();
+  const probe = path.join(dir, "probe.txt");
+  const out = path.join(dir, "rec.json");
+  const r = run(["run", "--deny-network", "--require-all", "--out", out, "--cmd", `echo ran > "${probe}"`]);
+  if (caps.networkNamespace.available) {
+    assert.equal(r.status, 0, "netns is available, so nothing is unverified");
+    assert.ok(fs.existsSync(probe), "the command should have run when every control holds");
+    return;
   }
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /refusing to execute/);
+  // The defect this replaces: the command was executed first and the refusal came after.
+  assert.equal(fs.existsSync(probe), false, "the command must not run when require-all refuses");
+  assert.equal(JSON.parse(fs.readFileSync(out, "utf8")).executed, false);
 });
 
 test("the generated profile passes, and tampering with it does not", () => {
@@ -136,4 +144,30 @@ test("the generated profile passes, and tampering with it does not", () => {
   const sock = path.join(d, "sock.yml");
   fs.writeFileSync(sock, text.replace("      - ./:/work:ro", "      - ./:/work:ro\n      - /var/run/docker.sock:/var/run/docker.sock"));
   assert.match(run(["verify", "--file", sock]).stdout, /docker socket/);
+});
+
+// ---- P1 · the controls must actually wrap the command -------------------------------
+test("the memory rlimit is enforced, not merely reported", () => {
+  // Before: `timeout -s KILL N ulimit -v X; cmd` — timeout died on a shell builtin and the
+  // command ran with no rlimit while controls said memoryLimited: true (F-11).
+  const caps = JSON.parse(run(["check", "--json"]).stdout);
+  if (!caps.memoryLimit.available) return;
+  const d = tmp();
+  const r = run(["run", "--memory-mb", "64", "--out", path.join(d, "rec.json"), "--cmd", "node -e \"Buffer.alloc(400*1024*1024,1); console.log('ALLOCATED')\""]);
+  assert.notEqual(r.status, 0, "a 400 MB allocation under a 64 MB limit must not succeed");
+  assert.doesNotMatch(r.stdout, /ALLOCATED/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(d, "rec.json"), "utf8")).controls.memoryLimited, true);
+});
+
+test("the timeout kills the whole process group, not just the wrapper", () => {
+  const d = tmp();
+  const probe = path.join(d, "orphan.txt");
+  const r = run(["run", "--timeout", "700", "--cmd", `sh -c 'sleep 2; echo survived > "${probe}"'`]);
+  assert.equal(r.status, 124);
+  // spawnSync returns at the timeout; the grandchild would write 1.3 s later if it survived.
+  const waited = Date.now() + 2500;
+  while (Date.now() < waited && !fs.existsSync(probe)) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  assert.equal(fs.existsSync(probe), false, "a grandchild outlived the timeout");
 });

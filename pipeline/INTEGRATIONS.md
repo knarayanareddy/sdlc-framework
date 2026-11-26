@@ -120,7 +120,9 @@ are dropped and counted), a fresh temporary workdir, `--copy` isolation so the c
 write to your tree, a hard timeout, an output cap, and a JSON record of what was enforced.
 
 `run` applies **only where available**: a network namespace, a memory rlimit. Anything it could
-not enforce is printed as `NOT_VERIFIED` and, with `--require-all`, refuses to exit 0.
+not enforce is printed as `NOT_VERIFIED`. With `--require-all` it refuses **before** it runs
+anything: the command is not executed at all and the tool exits 3 (the old order ran first and
+refused afterwards, so "refused" still meant "executed").
 
 `profile` generates a compose file with `network_mode: none`, `read_only`, `cap_drop: ALL`,
 `no-new-privileges`, `pids_limit`, `mem_limit`, `ulimits`, `tmpfs`, a non-root uid, and no
@@ -301,7 +303,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# NOT_VERIFIED: calibration has not been run for pipeline 2.2.0
+# NOT_VERIFIED: calibration has not been run for pipeline 2.3.0
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.

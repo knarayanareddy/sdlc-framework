@@ -239,3 +239,17 @@ test("a copy of the pipeline in a directory with spaces runs", () => {
   assert.equal(res.status, 0, `expected exit 0 from a spaced path, got ${res.status}\n${res.stdout}${res.stderr}`);
   assert.match(res.stdout, /pipeline-fuzz/);
 });
+
+// ---------------------------------------------------------------------------
+// 12 · An evidence gate suggests something it can actually run (F-18)
+// ---------------------------------------------------------------------------
+test("gate G3 suggests the real evidence command, not --builtin manual", () => {
+  const dir = project("g3");
+  const res = cli(dir, ["gate", "G3", "--builtin", "manual"]);
+  // `manual` resolves to nothing, so the gate must not run — but the hint has to be true.
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /is an evidence gate/);
+  assert.match(res.stdout, /gate G3 --evidence docs\/03-design\/design-brief\.md/);
+  assert.doesNotMatch(res.stdout, /Suggested: --builtin manual/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

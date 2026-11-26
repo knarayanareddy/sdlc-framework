@@ -88,3 +88,41 @@ test("an app with no entry points is reported, not silently empty", () => {
   assert.equal(res.status, 1);
   assert.match(res.stderr, /no entry points found/);
 });
+
+// ---- P1 · the enumerator must not certify an app it never looked at ----------------------
+const run = (dir, extra = []) => spawnSync("node", [TOOL, "--root", dir, ...extra], { encoding: "utf8" });
+
+test("zero entry points is NOT_VERIFIED even when --out is given", () => {
+  // With --out the tool used to warn and exit 0, so coverage-gate then had an empty
+  // subject it could call "fully covered" (F-10).
+  const dir = fixture({ "README.md": "nothing here\n" });
+  const out = path.join(dir, "entrypoints.json");
+  const res = run(dir, ["--out", out]);
+  assert.equal(res.status, 3);
+  assert.match(res.stdout, /NOT_VERIFIED: no entry points/);
+  assert.match(res.stdout, /human command/);
+});
+
+test("the pipeline's own tools are not the app's entry points", () => {
+  // `--root .` inside this repo enumerated pipeline/tools/*.mjs as application surface.
+  const dir = fixture({
+    "app/api/items/route.ts": "export async function GET() { return Response.json([]); }\n",
+    "pipeline/tools/other.mjs": "export async function GET() {}\n",
+  });
+  const out = path.join(dir, "entrypoints.json");
+  assert.equal(run(dir, ["--out", out]).status, 0);
+  const { entrypoints } = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(entrypoints.length, 1);
+  assert.ok(entrypoints.every((e) => !e.file.startsWith("pipeline/")));
+});
+
+test("a fetch with a template-literal URL is an SSRF surface", () => {
+  // The SSRF pattern excluded backticks, so fetch(`http://${host}/api`) was invisible.
+  const dir = fixture({
+    "app/api/proxy/route.ts": "export async function GET() {\n  const r = await fetch(`http://${process.env.UPSTREAM}/api`);\n  return Response.json(await r.json());\n}\n",
+  });
+  const out = path.join(dir, "entrypoints.json");
+  assert.equal(run(dir, ["--out", out]).status, 0);
+  const { entrypoints } = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.ok(entrypoints.some((e) => e.kind === "outboundFetch"), JSON.stringify(entrypoints));
+});

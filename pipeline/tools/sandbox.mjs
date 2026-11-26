@@ -115,7 +115,9 @@ function cmdRun() {
     controls.workdirIsolated = true;
     notes.push(`ran against a copy of ${flags.copy}`);
   } else {
-    controls.workdirIsolated = true;
+    // There is no isolation unless --copy put the command in its own tree. Claiming
+    // `true` here while --cwd points at the real project was a false control.
+    controls.workdirIsolated = !flags.cwd;
   }
 
   // 2 · scrubbed environment
@@ -141,19 +143,55 @@ function cmdRun() {
     notes.push("network was NOT denied (pass --deny-network)");
   }
 
-  // 4 · memory rlimit
+  // 4 · memory rlimit. `ulimit` is a shell builtin, so it must run inside the shell that
+  // then runs the command — `timeout ulimit -v …; cmd` made timeout die on a non-binary and
+  // left the command with neither control while both were reported as applied (F-11).
+  const inner = cmd;
+  let needsShell = false;
   if (flags["memory-mb"] && caps.memoryLimit.available) {
-    shellCmd = `ulimit -v ${Number(flags["memory-mb"]) * 1024} 2>/dev/null; ${shellCmd}`;
+    needsShell = true;
     controls.memoryLimited = true;
   } else if (flags["memory-mb"]) {
     controls.memoryLimited = "NOT_VERIFIED";
     notes.push("memory rlimit unavailable on this host");
   }
 
-  // 5 · timeout, enforced twice where possible
-  if (flags.timeout && caps.timeoutBinary.available && process.platform !== "win32") {
+  // 5 · timeout wraps the whole shell, so the limit applies to the command, not to the
+  // rlimit call. Both controls now compose: `timeout -s KILL N sh -c 'ulimit -v X; cmd'`.
+  const useTimeout = Boolean(flags.timeout && caps.timeoutBinary.available && process.platform !== "win32");
+  if (needsShell) {
+    const limit = Number(flags["memory-mb"]) * 1024;
+    const quoted = `'${inner.replace(/'/g, `'\\''`)}'`;
+    shellCmd = `ulimit -v ${limit} 2>/dev/null; exec sh -c ${quoted}`;
+    // `exec` replaces this shell with the inner one, so the timeout kills the command
+    // itself rather than a wrapper.
+    shellCmd = `sh -c ${`'${shellCmd.replace(/'/g, `'\\''`)}'`}`;
+  }
+  if (flags["deny-network"] && caps.networkNamespace.available) {
+    shellCmd = `unshare -n ${shellCmd}`;
+  }
+  if (useTimeout) {
     shellCmd = `timeout -s KILL ${Math.ceil(timeout / 1000)} ${shellCmd}`;
   }
+  // --require-all must gate execution, not describe it afterwards. It used to run the
+  // command and then refuse to call the run sandboxed (F-11).
+  const unverifiedBefore = Object.entries(controls).filter(([, v]) => v === "NOT_VERIFIED").map(([k]) => k);
+  if (flags["require-all"] && unverifiedBefore.length) {
+    console.error(paint.red(`--require-all: refusing to execute — ${unverifiedBefore.join(", ")} cannot be enforced on this host`));
+    console.error(`[sandbox] human command: node pipeline/tools/sandbox.mjs profile --out docker-compose.sandbox.yml && docker compose -f docker-compose.sandbox.yml run --rm sandbox <cmd>`);
+    if (flags.out) {
+      writeJson(path.resolve(String(flags.out)), {
+        controls,
+        unverified: unverifiedBefore,
+        executed: false,
+        command: cmd,
+        at: new Date().toISOString(),
+      });
+    }
+    fs.rmSync(workdir, { recursive: true, force: true });
+    process.exit(3);
+  }
+
   const started = Date.now();
   const res = spawnSync(shellCmd, {
     shell: true,
@@ -208,6 +246,15 @@ function cmdRun() {
   const summary = timedOut ? paint.yellow(`exit 124 (killed after ${timeout} ms)`) : exitCode === 0 ? paint.green("exit 0") : paint.red(`exit ${exitCode}`);
   console.error(`\n[sandbox] ${summary} in ${durationMs} ms · ${applied} control(s) applied${truncated ? " · output truncated" : ""}`);
   for (const n of notes) console.error(`[sandbox] ${paint.dim(n)}`);
+  // The rlimit is now enforced (it used to be silently skipped), and `ulimit -v` bounds
+  // *virtual address space*: a JS runtime reserves gigabytes of it before running a line,
+  // so a limit that looks generous kills the runtime at startup. Say so instead of
+  // leaving a 133 behind.
+  if (controls.memoryLimited === true && [133, 134, 135, 137, 139].includes(exitCode) && durationMs < 1000) {
+    console.error(
+      `[sandbox] ${paint.yellow(`exit ${exitCode} within ${durationMs} ms under --memory-mb ${flags["memory-mb"]}`)} — ulimit -v limits virtual address space, which a JS runtime reserves in GB; try --memory-mb 4096`,
+    );
+  }
   if (unverified.length) console.error(`[sandbox] ${paint.yellow(`NOT_VERIFIED: ${unverified.join(", ")}`)} — the report must say so`);
 
   if (flags["require-all"] && unverified.length) {
@@ -217,7 +264,7 @@ function cmdRun() {
   }
 
   if (flags.keep !== undefined) console.error(`[sandbox] workdir kept: ${workdir}`);
-  else if (!flags.cwd) fs.rmSync(workdir, { recursive: true, force: true });
+  else fs.rmSync(workdir, { recursive: true, force: true });
 
   process.exit(exitCode);
 }
@@ -248,7 +295,8 @@ services:
         hard: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
-      - /work:rw,noexec,nosuid,size=512m
+      # /work is the read-only bind mount below; a tmpfs here shadowed it and the
+      # container saw an empty directory (F-12).
     working_dir: /work
     environment:
       - CI=1
