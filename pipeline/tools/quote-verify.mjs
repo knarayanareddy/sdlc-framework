@@ -10,7 +10,7 @@
 // Snapshot sources: file: URLs always work (used by the self-test); http(s) needs
 // network access and --fetch. Without --fetch, a missing snapshot is `page-unreachable`.
 import fs from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { parseArgs, sha256, ensureDir, paint, fail } from "./lib/common.mjs";
 
@@ -44,10 +44,12 @@ function normalise(text) {
 }
 
 // A `file:` source is a page the agent could have written itself, so it may only point at
-// the research directory or the system temp dir — otherwise a builder can vouch for its own
-// claim by writing the "page" it quotes (M-01).
+// the research directory — otherwise a builder can vouch for its own claim by writing the
+// "page" it quotes (M-01). The temp dir used to be allowed too, which made every /tmp file a
+// citable source and made the suite fail on a clone that lived under /tmp
+// (SECOND-OPINION-3 G-10, G-11).
 function fileSourceAllowed(target) {
-  const allowed = [path.resolve(process.cwd(), "docs", "01-research"), path.resolve(os.tmpdir())];
+  const allowed = [path.resolve(process.cwd(), "docs", "01-research")];
   const real = (() => {
     try {
       return fs.realpathSync(target);
@@ -76,7 +78,7 @@ async function snapshot(url) {
     const target = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
     if (!fs.existsSync(target)) return { status: "page-unreachable", text: null, file };
     if (!fileSourceAllowed(target)) {
-      return { status: "page-unreachable", text: null, file, note: "file: sources are limited to docs/01-research/ and the temp dir" };
+      return { status: "page-unreachable", text: null, file, note: "file: sources are limited to docs/01-research/" };
     }
     const text = fs.readFileSync(target, "utf8");
     ensureDir(snapshotsDir);

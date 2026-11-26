@@ -522,3 +522,61 @@ test("--verdict without a dispatch attestation is refused", () => {
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.0 — a missing baseline is not permission to make a new one (G-08)
+// ---------------------------------------------------------------------------
+test("after phase 05, deleting the baseline does not re-freeze the weakened tests", () => {
+  const dir = project("baseline");
+  fs.writeFileSync(
+    path.join(dir, "docs", "02-spec", "SPEC.md"),
+    [
+      "# SPEC",
+      "",
+      "### REQ-001 A member can add a link",
+      "Priority: P0",
+      "Statement: The system SHALL let a member add a link.",
+      "Acceptance: Given a member When they post a link Then it appears in the list",
+      "Test level: unit",
+      "- Done-when: the unit tests for both cases pass.",
+      "",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    path.join(dir, "tests", "a.test.mjs"),
+    [
+      "// @req REQ-001",
+      'import { test } from "node:test";',
+      'import assert from "node:assert/strict";',
+      'test("a link can be added", () => { const n = 1; assert.equal(n, 1); });',
+      'test("a link is listed", () => { const n = 2; assert.equal(n, 2); });',
+      "",
+    ].join("\n"),
+  );
+  const frozen = cli(dir, ["gate", "G5", "--builtin", "trace:freeze,trace:check"]);
+  assert.equal(frozen.status, 0, frozen.stdout + frozen.stderr);
+
+  markPhasesDone(dir, ["05"]);
+
+  // Weakon the tests the way a builder would: drop a case, keep coverage.
+  fs.writeFileSync(
+    path.join(dir, "tests", "a.test.mjs"),
+    [
+      "// @req REQ-001",
+      'import { test } from "node:test";',
+      'import assert from "node:assert/strict";',
+      'test("a link can be added", () => { const n = 1; assert.equal(n, 1); });',
+      "",
+    ].join("\n"),
+  );
+  assert.equal(cli(dir, ["gate", "G5", "--builtin", "trace:check"]).status, 1, "the baseline must catch the removed case");
+
+  // The old bypass: delete the baseline, run the builtin that freezes one first.
+  fs.rmSync(path.join(dir, "docs", "05-test", "baseline.json"), { force: true });
+  const again = cli(dir, ["gate", "G5", "--builtin", "trace:freeze,trace:check"]);
+  assert.equal(again.status, 1, `expected exit 1, got ${again.status}\n${again.stdout}${again.stderr}`);
+  assert.match(again.stderr, /is missing and phase 05 is done/);
+  assert.notEqual(progressOf(dir).gates.G5?.status, "passed");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
