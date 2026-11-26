@@ -41,13 +41,38 @@ function project({ config = null, calibration = null } = {}) {
   return dir;
 }
 
+// The probes look for binaries on PATH, so the tests own the PATH completely. `/usr/bin:/bin`
+// is NOT safe to keep: GitHub's ubuntu runner has a working docker there, and the "nothing is
+// installed" test would quietly pass for the wrong reason. Only `git` is carried over, by
+// symlink, because `calibrate.mjs` shells out to it.
+function minimalPath(keep = []) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "minbin-"));
+  for (const bin of keep) {
+    const found = String(process.env.PATH ?? "")
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((d) => path.join(d, bin))
+      .find((p) => {
+        try {
+          fs.accessSync(p, fs.constants.X_OK);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    if (found) fs.symlinkSync(found, path.join(dir, bin));
+  }
+  return dir;
+}
+
+const MINIMAL = minimalPath(["git"]);
 const HEADLESS = stubDir({}); // a PATH with no docker, nuclei or schemathesis
 
 function live(dir, args, { path: pathEnv = HEADLESS, env = {} } = {}) {
   // process.execPath, not "node": the PATH is replaced by stubs below.
   const res = spawnSync(process.execPath, [TOOL, ...args, "--cwd", dir], {
     encoding: "utf8",
-    env: { ...process.env, PATH: `${pathEnv}:/usr/bin:/bin`, ...env },
+    env: { ...process.env, PATH: `${pathEnv}${path.delimiter}${MINIMAL}`, ...env },
     timeout: 120_000,
   });
   return { status: res.status, stdout: res.stdout, stderr: res.stderr };

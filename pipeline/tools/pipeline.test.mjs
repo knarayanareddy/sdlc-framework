@@ -353,14 +353,16 @@ test("phase 08 records the round the findings file says was run", () => {
 // ---------------------------------------------------------------------------
 // P6 · `pipeline live` reports the environment, and does not invent a gate
 // ---------------------------------------------------------------------------
-test("pipeline live exits 3 on a host with no live environment, and writes the readiness file", () => {
+test("pipeline live reports the four P6 items and its exit code follows the worst one", () => {
   const dir = project("p6-live");
   const res = cli(dir, ["live"]);
-  assert.equal(res.status, 3, `expected NOT_VERIFIED on a bare host:\n${res.stdout}${res.stderr}`);
+  // The host is not a fixture: a CI runner has docker, a laptop may not. What must hold either
+  // way is that the exit code follows the report instead of always succeeding.
   assert.match(res.stdout, /P6 · live environment/);
-  assert.match(res.stdout, /RESULT: NOT_VERIFIED/);
   const report = readJson(path.join(dir, "docs", "13-live", "live-readiness.json"));
   assert.equal(report.items.length, 4);
-  assert.ok(report.items.every((i) => i.state !== "ready"));
+  const allReady = report.items.every((i) => i.state === "ready");
+  assert.equal(res.status, allReady ? 0 : 3, `exit ${res.status} with ${report.items.map((i) => `${i.id}=${i.state}`).join(" ")}`);
+  assert.match(res.stdout, allReady ? /RESULT: PASS/ : /RESULT: NOT_VERIFIED/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
