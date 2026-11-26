@@ -1,0 +1,36 @@
+{
+  "run": "RUN-1",
+  "mode": "FULL",
+  "profile": "standard",
+  "findings": [
+    {
+      "id": "F-01",
+      "title": "IDOR: GET /api/items/:id did not scope the query by team",
+      "severity": "high",
+      "status": "confirmed",
+      "evidenceTier": "T1",
+      "location": "src/lib/can-read.mjs:4",
+      "impact": "A member of team B could read any item of team A by id.",
+      "precondition": "authenticated member of any team, item id",
+      "test": "tests/security/idor.test.mjs",
+      "fix": "Scope the query with eq(items.teamId, session.teamId) in one shared data-access helper."
+    },
+    {
+      "id": "F-02",
+      "title": "Possible missing rate limit on the add-link route",
+      "severity": "medium",
+      "status": "needs_validation",
+      "location": "src/app/api/items/route.ts:10",
+      "missing": "whether the edge proxy or the app applies a per-session limit",
+      "humanCommand": "for i in $(seq 1 100); do curl -s -o /dev/null -w '%{http_code}\\n' -X POST -H 'content-type: application/json' -d '{\"url\":\"https://e.co\",\"title\":\"t\"}' localhost:3000/api/items; done | sort | uniq -c"
+    },
+    {
+      "id": "F-03",
+      "title": "Verbose error body on a malformed JSON body",
+      "severity": "low",
+      "status": "rejected",
+      "location": "src/app/api/items/route.ts:11",
+      "disproof": "The handler returns a fixed 400 without echoing the parser message; checked in request.json() catch block and in the response snapshot."
+    }
+  ]
+}

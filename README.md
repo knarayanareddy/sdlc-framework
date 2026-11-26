@@ -2,7 +2,18 @@
 
 > **Autonomous Build Pipeline**: Brief → Researched Spec → Built → Tested → Red-Teamed → Patched → Shipped.
 
-A comprehensive prompt and verification framework designed for LLMs, autonomous coding agents, and engineers. It includes phased execution prompts, mechanical gate-check tools, specification templates, and an application starter scaffold.
+A comprehensive prompt and verification framework designed for LLMs, autonomous coding agents, and engineers.
+
+**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Nine tools and a worked example, all zero-dependency and self-tested.
+
+```bash
+node pipeline/tools/run-selftests.mjs      # every tool passes its own test
+node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
+node pipeline/bin/pipeline.mjs --help      # init | gate | verify | phase | freeze | estimate | report
+```
+
+One thing this repository will not do: claim a gate it did not run. A gate is a command
+result, not an opinion.
 
 ---
 
@@ -13,7 +24,7 @@ A comprehensive prompt and verification framework designed for LLMs, autonomous 
    │
    ▼
 [01 Intake + Research] ──► evidence ledger, ranked ideas, differentiation thesis
-   │  GATE G1: every claim has a URL/date; ≥3 competitors; ≥1 rejected idea with reason
+   │  G1: verified quotes only; ≥5 competitors; ≥10 quotes; ≥3 rejected ideas with reasons
    ▼
 [02 Spec] ──► SPEC.md (REQ/SEC/NFR IDs, Given/When/Then, data-flow table, budgets, slices)
    │  GATE G2: trace-check passes structure; reviewer agent can't find an untestable requirement
@@ -46,42 +57,48 @@ A comprehensive prompt and verification framework designed for LLMs, autonomous 
 
 ## 📁 Repository Structure
 
-- **`pipeline/`**
-  - **`prompts/`**: Phased prompts for each stage of development:
-    - `00-orchestrator.md`: Master controller prompt to coordinate sub-agents and gate progression.
-    - `01-intake-and-research.md`: Market research, evidence ledger, and user intent.
-    - `02-spec-authoring.md`: Strict requirement drafting with Given/When/Then criteria.
-    - `03-design-ux.md`: Interface design, UX heuristics, WCAG accessibility rules.
-    - `04-architecture-threat-model.md`: Data flows, trust boundaries, and threat modeling (STRIDE).
-    - `05-test-strategy-and-scaffold.md`: Walking skeleton and red test suite generation.
-    - `06-build-slices.md`: Vertical slice implementation loop (red-green-refactor).
-    - `07-qa-verification.md`: Independent QA verification sweep and mutation testing.
-    - `08-red-team.md`: 6-phase security audit (Cloudflare security audit + Trail of Bits methods).
-    - `09-patch-and-validate.md`: Patch application and post-patch validation tests.
-    - `10-release-readiness.md`: Pre-flight verification, SBOM, and release checklist.
-  - **`templates/`**:
-    - `SPEC.template.md`: Schema-validated specification template.
-  - **`tools/`**:
-    - `trace-check.mjs`: Node.js tool to mechanically check requirement-to-test traceability.
-  - **`README.md`**: Detailed operating manual and methodology analysis.
+- **`pipeline/`** — the framework and the v2 tooling
+  - **`bin/pipeline.mjs`**: the orchestrator CLI — state machine, gate runner, hash-chained ledger, report
+  - **`tools/`**: ten gate tools, each with a `*.test.mjs` beside it:
+    `trace-check-v2`, `gate-ledger`, `entrypoints`, `coverage-gate`, `quote-verify`,
+    `validate-findings`, `validate-progress`, `protected-paths`, `tripwire`, `estimate`,
+    plus `expect-files`, `run-selftests` and the end-to-end `demo`
+  - **`schemas/`**: JSON schemas for `progress.json`, `findings.json`, `coverage-ledger.json`
+  - **`examples/mini-app/`**: a three-requirement worked example the demo runs end to end
+  - **`RUNBOOK.md`**: every command needed to run a real project
+  - **`prompts/`**: one prompt per phase
+    - `v2-00 … v2-12`, `v2-99` — the amended, executable set (supersedes v1)
+    - `00-orchestrator.md` … `10-release-readiness.md` — the original v1 set, kept for reference
+  - **`templates/SPEC.template.md`**: the 14-section specification schema
+  - **`README.md`**: the operating manual and methodology analysis
 - **`src/`**: Next.js 16 App Router starter with Drizzle ORM and PostgreSQL integration.
-
----
+- **`comprehensive-development-lifecycle-prompts/`**: an independent review of v1 (R-01…R-15) and **The Line**, a Next.js app that presents the review, the two pipelines side by side, and a Postgres-backed gate board. Run it from its own directory (`npm ci && npm run dev`). It serves the canonical `pipeline/prompts` and `pipeline/tools` files rather than keeping copies.
 
 ## 🛠️ Usage
 
-### 1. Mechanical Verification Gate
+### 1. Mechanical verification gate
 Validate requirement-to-test traceability mechanically at any time:
 ```bash
-node pipeline/tools/trace-check.mjs docs/02-spec/SPEC.md tests --allow-uncovered
+node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered
+node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered --check-baseline docs/05-test/baseline.json
 ```
+The second form fails on a deleted file, a lost assertion, a lost test case or a new skip.
 
-### 2. Autonomous Agent Execution
-1. Place project brief in `docs/00-intake/brief.md`.
-2. Feed `pipeline/prompts/00-orchestrator.md` into an autonomous agent capable of sub-agents (e.g., Antigravity, Claude Code, or Codex).
-3. If running manually, execute prompts `01` through `10` sequentially in fresh context windows.
+### 2. Autonomous agent execution (v2)
+1. `node pipeline/bin/pipeline.mjs init` inside the target repo, then edit `pipeline.config.json`.
+2. Feed `pipeline/prompts/v2-99-orchestrator.md` into an agent that can spawn sub-agents.
+3. `pipeline next` tells you the next phase, its prompt and its gate command. `pipeline verify` re-runs every recorded gate and names any drift.
+
+### 3. Worked example
+```bash
+node pipeline/tools/demo.mjs     # copies examples/mini-app to a temp dir and walks 00 → 12
+```
+Expected: `RESULT: PASS — phases 00 → 12 completed, every gate recorded`.
+
+### 4. CI
+`.github/workflows/pipeline.yml` runs the tool self-tests, the ledger tamper test, the demo, and the review app against a real Postgres service.
 
 ---
 
 ## 📜 License
-MIT
+MIT — see [LICENSE](./LICENSE).

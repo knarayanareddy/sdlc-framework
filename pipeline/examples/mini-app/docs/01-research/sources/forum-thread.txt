@@ -1,0 +1,9 @@
+[fixture page — used by the offline demo, content written for this example]
+
+We tried a shared reading list for our team of eight. The onboarding flow took me
+four attempts before I understood that lists were per team and not per user.
+
+I gave up and used a spreadsheet instead, because at least everyone already had it open.
+
+The thing that finally made us switch was that the second tool remembered what I had
+already read. Everything before that just added another place to check.

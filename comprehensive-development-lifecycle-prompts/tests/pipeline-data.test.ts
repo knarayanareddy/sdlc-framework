@@ -6,7 +6,7 @@ import { PHASE_ORDER, outcome, pos, strength } from "../src/lib/outcome";
 import { GATE_IDS } from "../src/lib/gates";
 import { CONTENT_FILES } from "../src/lib/content-manifest";
 
-const CONTENT_META = CONTENT_FILES as Record<string, { file: string }>;
+const CONTENT_META = CONTENT_FILES as Record<string, { file: string; root?: string }>;
 
 const review = fs.readFileSync(path.join(__dirname, "..", "content", "REVIEW-AND-V2.md"), "utf8");
 
@@ -67,7 +67,8 @@ describe("findings stay in sync with the written review", () => {
 
   it("the review document's file allowlist points at files that exist", () => {
     for (const [slug, meta] of Object.entries(CONTENT_META)) {
-      expect(fs.existsSync(path.join(__dirname, "..", "content", meta.file)), slug).toBe(true);
+      const base = path.resolve(__dirname, "..", meta.root ?? "content", meta.file);
+      expect(fs.existsSync(base), `${slug} → ${base}`).toBe(true);
     }
   });
 });

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdlc-framework/pipeline/coverage-ledger.schema.json",
+  "title": "docs/08-redteam/run-N/coverage-ledger.json",
+  "type": "object",
+  "required": ["run", "mode", "units"],
+  "properties": {
+    "run": { "type": "string" },
+    "mode": { "enum": ["FULL", "DIFF"] },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "description": "An entry point id from entrypoints.json, or subsystem:<name>" },
+          "status": { "enum": ["examined", "excluded", "unexamined"] },
+          "hunter": { "type": "string", "description": "required when status is examined" },
+          "reason": { "type": "string", "minLength": 8, "description": "required when status is excluded" },
+          "attackClasses": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

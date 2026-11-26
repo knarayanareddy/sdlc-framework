@@ -1,0 +1,94 @@
+name: pipeline
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tools:
+    name: pipeline tools (zero-dependency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: every tool passes its own test
+        run: node pipeline/tools/run-selftests.mjs
+
+      - name: the gate ledger catches a single edited line
+        run: node pipeline/tools/gate-ledger.mjs demo
+
+      - name: the worked example walks phases 00 → 12
+        run: node pipeline/tools/demo.mjs
+
+      - name: traceability on the example spec
+        run: |
+          node pipeline/tools/trace-check-v2.mjs \
+            pipeline/examples/mini-app/docs/02-spec/SPEC.md \
+            pipeline/examples/mini-app/tests --allow-uncovered
+
+      - name: report what this runner can and cannot enforce
+        run: |
+          node pipeline/tools/sandbox.mjs check
+          node pipeline/tools/dast.mjs plan
+          node pipeline/tools/verifier-route.mjs status
+          node pipeline/tools/calibrate.mjs status --dir /tmp/no-calibration || true
+
+      - name: the fuzzer finds a trusting server and passes a strict one
+        run: node --test pipeline/tools/fuzz-api.test.mjs
+
+      - name: campaign — a sandboxed run of the example's own tests
+        run: |
+          node pipeline/tools/sandbox.mjs run --copy pipeline/examples/mini-app \
+            --cmd "node --test" --timeout 120000 --max-output 20000 \
+            --out /tmp/sandbox-record.json
+
+      - name: entry-point enumerator is deterministic
+        run: |
+          cd pipeline/examples/mini-app
+          node ../../tools/entrypoints.mjs --root . --out /tmp/a.json --stable
+          node ../../tools/entrypoints.mjs --root . --out /tmp/b.json --stable
+          diff /tmp/a.json /tmp/b.json
+
+  review-app:
+    name: review app (The Line)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: comprehensive-development-lifecycle-prompts
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: comprehensive-development-lifecycle-prompts/package-lock.json
+
+      - run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: lint
+        run: npm run lint
+
+      - name: tests (unit, data integrity, real Postgres)
+        run: npx vitest run
+
+      - name: production build
+        run: npm run build

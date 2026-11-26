@@ -1,0 +1,27 @@
+{
+  "$comment": "The spec's API section in machine form, for pipeline/tools/fuzz-api.mjs (and schemathesis, if you have it). Copy to api-contract.json and fill it in. `unknownFields: reject` is what turns a mass-assignment lead into a violation, so only claim it if the spec says it.",
+  "baseUrl": "http://127.0.0.1:3000",
+  "openapiUrl": "./openapi.json",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/items",
+      "auth": { "env": "TEST_SESSION_COOKIE", "header": "cookie" },
+      "body": {
+        "unknownFields": "reject",
+        "fields": {
+          "title": { "type": "string", "maxLength": 200 },
+          "quantity": { "type": "integer", "min": 1 }
+        }
+      },
+      "responses": { "ok": [201], "clientError": [400, 401, 403, 409, 413, 415, 422, 429] },
+      "sample": { "title": "probe", "quantity": 1 }
+    },
+    {
+      "method": "GET",
+      "path": "/api/items/1",
+      "auth": { "env": "TEST_SESSION_COOKIE", "header": "cookie" },
+      "responses": { "ok": [200], "clientError": [400, 401, 403, 404, 429] }
+    }
+  ]
+}
