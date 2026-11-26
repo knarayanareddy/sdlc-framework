@@ -54,7 +54,10 @@ const results = [
   // New: a missing baseline is a failure, not a silent pass.
   run("baseline: a missing baseline file fails closed", `// @req SEC-001\nexpect(1).toBe(2);\n`, 1, ["--check-baseline", "$DIR/nope.json"]),
   // New: machine-readable output for the orchestrator.
-  run("--json emits a parseable result", `// @req SEC-001\nexpect(1).toBe(2);\n`, 0, ["--json"], SPEC, undefined, '"result": "PASS"'),
+  run("--json emits a parseable result", `// @req SEC-001\nit("B is refused", () => { const res = { status: 403 }; expect(res.status).toBe(403); });\n`, 0, ["--json"], SPEC, undefined, '"result": "PASS"'),
+  // New at 2.8.0: an assertion in a comment or a string is not a test (SECOND-OPINION-3 G-07).
+  run("commented-out assertions are NOT coverage", `// @req SEC-001\nit("hollow", () => {\n  // expect(1).toBe(2);\n  // assert.equal(1, 2);\n});\n`, 1),
+  run("an assertion outside any test case is NOT coverage", `// @req SEC-001\nexpect(1).toBe(2);\n`, 1),
 ];
 
 const failed = results.filter((r) => !r).length;

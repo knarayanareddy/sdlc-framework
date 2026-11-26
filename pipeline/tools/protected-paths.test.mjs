@@ -92,3 +92,45 @@ test("without git the check is NOT_VERIFIED (exit 3), never a pass", () => {
   assert.equal(res.status, 3);
   assert.match(res.stdout, /NOT_VERIFIED/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 · 2.8.0 — the rules are a trust input, and zero rules is not "clean"
+// ---------------------------------------------------------------------------
+test("no protected rules is NOT_VERIFIED, not a pass", () => {
+  // `{"protectedPaths": []}` used to print "protected rules: 0 … RESULT: PASS" even after an
+  // existing test was gutted (SECOND-OPINION-3 G-09).
+  const { dir, write } = repo();
+  write("pipeline.config.json", JSON.stringify({ protectedPaths: [] }));
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "no rules");
+  write("tests/a.test.ts", 'it("a", () => {})\n');
+  git(dir, "commit", "-q", "-am", "gut the test");
+
+  const res = check(dir);
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /no protected paths are configured/);
+  assert.match(res.stdout, /NOT_VERIFIED/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the rules are read from the base commit, so editing the config does not disarm the check", () => {
+  const { dir, write } = repo();
+  write("pipeline.config.json", JSON.stringify({ protectedPaths: [{ glob: "tests/**", allowNew: true, why: "append-only" }] }));
+  write("docs/progress.json", JSON.stringify({ baseCommit: "HEAD" }));
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "rules");
+  const base = git(dir, "rev-parse", "--short", "HEAD").stdout.trim();
+  write("docs/progress.json", JSON.stringify({ baseCommit: base }));
+
+  // The builder disarms the check in the working tree, then edits an existing test.
+  write("pipeline.config.json", JSON.stringify({ protectedPaths: [] }));
+  write("tests/a.test.ts", 'it("a", () => {})\n');
+  git(dir, "commit", "-q", "-am", "gut the test behind a disarmed config");
+
+  const res = check(dir);
+  assert.equal(res.status, 1, `expected exit 1, got ${res.status}\n${res.stdout}${res.stderr}`);
+  assert.match(res.stdout, /tests\/a\.test\.ts/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

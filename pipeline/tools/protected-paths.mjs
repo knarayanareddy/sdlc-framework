@@ -40,7 +40,39 @@ const DEFAULT_PROTECTED = [
   { glob: "pipeline/prompts/**", allowNew: true, why: "prompts are versioned; changes need an eval entry (v2-12)" },
 ];
 
-const protectedPaths = config.protectedPaths ?? DEFAULT_PROTECTED;
+// The rules are a trust input: `{"protectedPaths": []}` used to mean "nothing is protected,
+// RESULT: PASS", and the config sits in the tree the builder edits (SECOND-OPINION-3 G-09).
+// Read them from the base commit when git can produce it, and fail closed on an empty list.
+function rulesFromBase() {
+  const base = flags.ref ?? progress.baseCommit ?? null;
+  if (!base) return { rules: null, from: null };
+  const shown = run(`git show ${base}:${configPath}`);
+  if (shown.code !== 0) return { rules: null, from: null };
+  try {
+    const doc = JSON.parse(shown.stdout);
+    if (Array.isArray(doc.protectedPaths)) return { rules: doc.protectedPaths, from: base };
+  } catch {
+    /* fall through to the working tree, with a warning */
+  }
+  return { rules: null, from: null };
+}
+
+const fromBase = rulesFromBase();
+const protectedPaths = fromBase.rules ?? config.protectedPaths ?? DEFAULT_PROTECTED;
+if (!fromBase.rules && config.protectedPaths) {
+  console.log(
+    paint.yellow(
+      `warn: protectedPaths came from the working tree, not from ${progress.baseCommit ?? "a base commit"} — a config edit is invisible to this check; commit it and re-run`,
+    ),
+  );
+}
+
+if (!Array.isArray(protectedPaths) || protectedPaths.length === 0) {
+  console.log(paint.yellow("no protected paths are configured"));
+  console.log("RESULT: NOT_VERIFIED — a check with zero rules cannot tell a clean tree from a hollowed one");
+  console.log(`human command: node pipeline/tools/protected-paths.mjs --config ${configPath}   # after restoring the rules`);
+  process.exit(3);
+}
 
 const top = run("git rev-parse --show-toplevel");
 if (top.code !== 0) {

@@ -788,10 +788,19 @@ switch (command) {
         if (resolved === null) continue;
         cmds.push(resolved);
       }
-      // G5: freeze the baseline before checking it, if it does not exist yet.
+      // G5: freeze the baseline before checking it, but only while the baseline is still being
+      // established. Once phase 05 is done, a missing baseline is not an invitation to make a
+      // new one from whatever the tests now say: that is how `rm baseline.json` turned gutted
+      // tests into a pass (SECOND-OPINION-3 G-08).
       if (gate === "G5" && names.includes("trace:check") && !fs.existsSync(abs(cfg.baseline))) {
+        const phase05 = readProgress().phases?.["05"]?.status;
+        if (phase05 === "done") {
+          fail(
+            `${cfg.baseline} is missing and phase 05 is done. A baseline is not re-created after the fact — restore it with: git show <base>:${cfg.baseline} > ${cfg.baseline}`,
+          );
+        }
         cmds = [builtin("trace:freeze"), ...cmds.filter((c) => c !== builtin("trace:freeze"))];
-        console.log(paint.dim("baseline missing: freezing it first"));
+        console.log(paint.dim("baseline missing: freezing it first (phase 05 is not done yet)"));
       }
     }
     if (flags.cmd) cmds.push(String(flags.cmd));

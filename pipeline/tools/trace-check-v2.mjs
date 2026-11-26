@@ -100,6 +100,86 @@ function walk(dir, out = []) {
 
 const TAUTOLOGY = /expect\(\s*(true|false|null|undefined|\d+|"[^"]*"|'[^']*')\s*\)\s*\.(toBe|toEqual|toStrictEqual)\(\s*\1\s*\)/g;
 const ASSERT = /\b(expect\s*\(|assert(?:\.\w+)?\s*\(|should\.|toMatchSnapshot|toHaveScreenshot|fc\.assert\s*\()/g;
+
+// An assertion in a comment or a string is not a test. `// expect(1).toBe(2)` inside an empty
+// case used to cover five requirements and pass G5 (SECOND-OPINION-3 G-07). Strip comments and
+// string literals first, then count only assertions that sit inside a test case body.
+function stripNonCode(text) {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === "/" && d === "/") {
+      while (i < n && text[i] !== "\n") { out += " "; i++; }
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      i += 2;
+      while (i < n && !(text[i] === "*" && text[i + 1] === "/")) { out += text[i] === "\n" ? "\n" : " "; i++; }
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      out += " ";
+      i++;
+      while (i < n && text[i] !== quote) {
+        if (text[i] === "\\") { out += "  "; i += 2; continue; }
+        out += text[i] === "\n" ? "\n" : " ";
+        i++;
+      }
+      out += " ";
+      i++;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// Walk each `test(`/`it(` call and take its body: the brace block after the arrow or function,
+// or the argument list when the case is an expression body. Cheap, but it puts the assertion
+// where a reader would look for it -- inside the case.
+function assertionsInCases(code) {
+  let total = 0;
+  const call = /\b(it|test)(?:\.\w+)*\s*\(/g;
+  let m;
+  while ((m = call.exec(code))) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    let bodyStart = -1;
+    let bodyEnd = -1;
+    let sawBrace = false;
+    while (i < code.length) {
+      const c = code[i];
+      if (c === "(") depth++;
+      else if (c === ")") {
+        depth--;
+        if (depth === 0) { if (bodyStart === -1) { bodyStart = m.index + m[0].length; bodyEnd = i; } break; }
+      } else if (c === "{" && !sawBrace) {
+        sawBrace = true;
+        bodyStart = i + 1;
+        let braces = 1;
+        i++;
+        while (i < code.length && braces > 0) {
+          if (code[i] === "{") braces++;
+          else if (code[i] === "}") braces--;
+          i++;
+        }
+        bodyEnd = i - 1;
+        break;
+      }
+      i++;
+    }
+    if (bodyStart === -1 || bodyEnd <= bodyStart) continue;
+    const body = code.slice(bodyStart, bodyEnd);
+    total += (body.match(ASSERT) ?? []).length;
+  }
+  return total;
+}
 const SKIP = /\b(it|test|describe)\.(skip|todo|fixme|fails)\b|\b(xit|xtest|xdescribe)\s*\(|\bxfail\b/g;
 const CASES = /\b(it|test)(?:\.\w+)?\s*\(/g;
 const TAG_LINE = /^[ \t]*(?:\/\/|\/\*+|\*)[ \t]*@req[ \t]+((?:(?:REQ|SEC|NFR)-\d+[\s,]*)+)/gm;
@@ -114,12 +194,15 @@ const files = walk(testsDir)
   .filter((f) => !scope || scope.matches(path.relative(process.cwd(), f).split(path.sep).join("/")))
   .map((f) => {
   const text = fs.readFileSync(f, "utf8");
-  const rawAsserts = (text.match(ASSERT) ?? []).length;
+  const code = stripNonCode(text);
+  const rawAsserts = (code.match(ASSERT) ?? []).length;
+  const inCases = assertionsInCases(code);
   const tautologies = (text.match(TAUTOLOGY) ?? []).length;
   return {
     file: f,
     sha: crypto.createHash("sha256").update(text).digest("hex").slice(0, 16),
-    asserts: Math.max(0, rawAsserts - tautologies),
+    asserts: Math.max(0, inCases - tautologies),
+    assertsOutsideCases: Math.max(0, rawAsserts - inCases),
     tautologies,
     skips: (text.match(SKIP) ?? []).length,
     cases: (text.match(CASES) ?? []).length,
@@ -141,7 +224,8 @@ for (const f of files) {
   if (f.skips > 0) problems.push(`${f.file}: ${f.skips} skipped/todo/xfail test(s) in a tagged file; skipped tests are not coverage`);
   if (f.tautologies > 0) problems.push(`${f.file}: ${f.tautologies} tautological assertion(s) ignored`);
   if (f.asserts === 0) {
-    problems.push(`${f.file}: tagged ${[...new Set(f.tags)].join(",")} but contains 0 real assertions`);
+    const why = f.assertsOutsideCases ? `${f.assertsOutsideCases} assertion(s) outside any test case` : "none in code (comments and strings do not count)";
+    problems.push(`${f.file}: tagged ${[...new Set(f.tags)].join(",")} but contains 0 real assertions in a test case — ${why}`);
     continue;
   }
   if (f.skips === 0) for (const id of f.tags) covered.set(id, [...(covered.get(id) ?? []), f.file]);
