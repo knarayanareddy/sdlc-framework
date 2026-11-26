@@ -6,8 +6,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const transport = path.resolve(here, "..", "examples", "verifier-transport.example.mjs");
 const route = path.join(here, "verifier-route.mjs");
 const repoRoot = path.resolve(here, "..", "..");

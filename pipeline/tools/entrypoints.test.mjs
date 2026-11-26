@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./entrypoints.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./entrypoints.mjs", import.meta.url));
 
 function fixture(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ep-"));
@@ -86,4 +87,79 @@ test("an app with no entry points is reported, not silently empty", () => {
   const res = spawnSync("node", [TOOL, "--root", dir], { encoding: "utf8" });
   assert.equal(res.status, 1);
   assert.match(res.stderr, /no entry points found/);
+});
+
+// ---- P1 · the enumerator must not certify an app it never looked at ----------------------
+const run = (dir, extra = []) => spawnSync("node", [TOOL, "--root", dir, ...extra], { encoding: "utf8" });
+
+test("zero entry points is NOT_VERIFIED even when --out is given", () => {
+  // With --out the tool used to warn and exit 0, so coverage-gate then had an empty
+  // subject it could call "fully covered" (F-10).
+  const dir = fixture({ "README.md": "nothing here\n" });
+  const out = path.join(dir, "entrypoints.json");
+  const res = run(dir, ["--out", out]);
+  assert.equal(res.status, 3);
+  assert.match(res.stdout, /NOT_VERIFIED: no entry points/);
+  assert.match(res.stdout, /human command/);
+});
+
+test("the pipeline's own tools are not the app's entry points", () => {
+  // `--root .` inside this repo enumerated pipeline/tools/*.mjs as application surface.
+  const dir = fixture({
+    "app/api/items/route.ts": "export async function GET() { return Response.json([]); }\n",
+    "pipeline/tools/other.mjs": "export async function GET() {}\n",
+  });
+  const out = path.join(dir, "entrypoints.json");
+  assert.equal(run(dir, ["--out", out]).status, 0);
+  const { entrypoints } = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(entrypoints.length, 1);
+  assert.ok(entrypoints.every((e) => !e.file.startsWith("pipeline/")));
+});
+
+test("a fetch with a template-literal URL is an SSRF surface", () => {
+  // The SSRF pattern excluded backticks, so fetch(`http://${host}/api`) was invisible.
+  const dir = fixture({
+    "app/api/proxy/route.ts": "export async function GET() {\n  const r = await fetch(`http://${process.env.UPSTREAM}/api`);\n  return Response.json(await r.json());\n}\n",
+  });
+  const out = path.join(dir, "entrypoints.json");
+  assert.equal(run(dir, ["--out", out]).status, 0);
+  const { entrypoints } = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.ok(entrypoints.some((e) => e.kind === "outboundFetch"), JSON.stringify(entrypoints));
+});
+
+// ---- P4 · brownfield scoping ---------------------------------------------------------
+// Scoping is about the project being changed, so these run with cwd = the fixture project.
+const runIn = (dir, args) => spawnSync("node", [TOOL, ...args], { encoding: "utf8", cwd: dir });
+
+test("--scope restricts the enumeration and the output says it was scoped", () => {
+  const dir = fixture({
+    "app/api/items/route.ts": "export async function GET() { return Response.json([]); }\n",
+    "lib/report/route.ts": "export async function GET() { return Response.json({}); }\n",
+  });
+  const out = path.join(dir, "ep.json");
+  const scoped = runIn(dir, ["--root", ".", "--out", out, "--scope", "app/api"]);
+  assert.equal(scoped.status, 0, scoped.stdout + scoped.stderr);
+  assert.match(scoped.stdout, /SCOPED \(under app\/api\)/);
+  const parsed = JSON.parse(fs.readFileSync(out, "utf8"));
+  assert.equal(parsed.scoped, "under app/api");
+  assert.deepEqual(parsed.entrypoints.map((e) => e.file), ["app/api/items/route.ts"]);
+});
+
+test("--changed-since follows git and a scope that selects nothing is NOT_VERIFIED", () => {
+  const dir = fixture({ "app/api/items/route.ts": "export async function GET() {}\n", "app/api/ping/route.ts": "export async function GET() {}\n" });
+  const git = (...args) => spawnSync("git", ["-c", "user.email=t@e.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  // Only this file changes after the base commit.
+  fs.writeFileSync(path.join(dir, "app/api/ping/route.ts"), "export async function GET() { return Response.json({}); }\n");
+  const out = path.join(dir, "ep.json");
+  const r = runIn(dir, ["--root", ".", "--out", out, "--changed-since", "HEAD"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /SCOPED \(changed since HEAD \(1 file\)\)/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, "utf8")).entrypoints.map((e) => e.file), ["app/api/ping/route.ts"]);
+
+  const empty = runIn(dir, ["--root", ".", "--out", path.join(dir, "none.json"), "--scope", "lib"]);
+  assert.equal(empty.status, 3);
+  assert.match(empty.stdout, /the scope \(under lib\) contains no entry points/);
 });

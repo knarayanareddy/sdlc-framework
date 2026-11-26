@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./estimate.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./estimate.mjs", import.meta.url));
 
 const run = (...args) => {
   const res = spawnSync("node", [TOOL, ...args], { encoding: "utf8" });

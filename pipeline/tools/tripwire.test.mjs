@@ -4,8 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const TOOL = new URL("./tripwire.mjs", import.meta.url).pathname;
+const TOOL = fileURLToPath(new URL("./tripwire.mjs", import.meta.url));
 
 function run(checks, extra = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tw-"));
@@ -34,12 +35,31 @@ test("a failing check fails the tripwire and prints its output", () => {
   assert.match(stdout, /RESULT: FAIL/);
 });
 
-test("a missing tool is NOT_VERIFIED, not a pass", () => {
+test("a missing tool is NOT_VERIFIED, which is not a pass", () => {
   const { status, stdout } = run([PASS, MISSING]);
-  assert.equal(status, 0, "non-strict: NOT_VERIFIED does not fail the slice");
-  assert.match(stdout, /NOT_VERIFIED/);
+  // Exit 3 is the pipeline's NOT_VERIFIED protocol. Exiting 0 here is what let a tripwire
+  // that evaluated nothing read as green (F-13).
+  assert.equal(status, 3, "NOT_VERIFIED must exit 3, not 0");
+  assert.match(stdout, /RESULT: NOT_VERIFIED/);
   assert.match(stdout, /A human must run:/);
   assert.match(stdout, /definitely-not-a-real-tool-xyz/);
+  assert.match(stdout, /human command:/);
+});
+
+const NOT_FOUND = { name: "trace", cmd: 'node -e "console.error(\'spec not found: docs/02-spec/SPEC.md\'); process.exit(2)"' };
+
+test("a mandatory check is never downgraded to NOT_VERIFIED", () => {
+  // This is the F-13 shape: stderr says "spec not found", exit 2, and the old heuristic
+  // matched /not found/ and recorded a hard failure as "tool unavailable".
+  const { status, stdout } = run([NOT_FOUND]);
+  assert.equal(status, 1, "a mandatory check that cannot run is a failure");
+  assert.match(stdout, /RESULT: FAIL/);
+});
+
+test("only a check declared optional may be downgraded", () => {
+  const { status, stdout } = run([{ ...NOT_FOUND, name: "sast", optional: true }]);
+  assert.equal(status, 3);
+  assert.match(stdout, /NOT_VERIFIED/);
 });
 
 test("--strict turns NOT_VERIFIED into a failure for release gates", () => {

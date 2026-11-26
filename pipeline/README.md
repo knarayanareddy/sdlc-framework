@@ -13,7 +13,7 @@ v1 was prose plus one regex tool. **v2 ships the missing mechanisms as programs*
 its own test. Nothing below needs a model until a prompt tells you to dispatch one.
 
 ```bash
-node pipeline/tools/run-selftests.mjs      # 10 test groups: no tool is trusted before its own test
+node pipeline/tools/run-selftests.mjs      # 23 test files + 1 selftest script: no tool is trusted before its own test
 node pipeline/tools/gate-ledger.mjs demo   # the G0 tamper test
 node pipeline/tools/demo.mjs               # walk phases 00 → 12 on a worked example
 
@@ -27,23 +27,31 @@ node pipeline/bin/pipeline.mjs report
 | Tool | Closes | What it does |
 |---|---|---|
 | `bin/pipeline.mjs` | the missing state machine | runs gates itself, records exit codes, appends a hash-chained ledger, refuses phase transitions without prerequisites |
-| `tools/trace-check-v2.mjs` | R-01 | tags must sit on their own line, need a real assertion, no skips; `--baseline` freezes assertions **and test cases** |
+| `tools/trace-check-v2.mjs` | R-01 | tags must sit on their own line, need a real assertion, no skips; `--baseline` freezes assertions **and test cases**; a `Test file:` in the spec must exist and carry the tag; `--allow-uncovered` is a structure run and says so (`PASS (structure only; not a coverage claim)`) — `trace:check` never passes it |
 | `tools/gate-ledger.mjs` | R-02 | append-only hash chain; `demo` proves one edited line breaks it |
 | `tools/protected-paths.mjs` | R-02 | tests are append-only; the agent cannot edit the tool that gates it |
-| `tools/quote-verify.mjs` | R-05 | snapshots every source and requires the quote to be a substring |
-| `tools/entrypoints.mjs` | R-08 | enumerates every route, action, env read, raw SQL and outbound fetch |
-| `tools/coverage-gate.mjs` | R-08 | enumerated entry points must appear in the coverage ledger, examined or excluded with a reason |
-| `tools/validate-findings.mjs` | R-09 | evidence tiers T1/T2/T3, a real tagged repro test, T3 capped at Medium, a DIFF run cannot claim clean |
+| `tools/quote-verify.mjs` | R-05 | snapshots every source and requires the quote to be a substring; a page flagged `injectionSuspected` is quarantined (no ledger rows at all), every verified row records the snapshot's sha256 and how it was obtained, and `file:` sources are limited to `docs/01-research/` and the temp dir so a builder cannot write the page it quotes |
+| `tools/entrypoints.mjs` | R-08 | enumerates every route, action, env read, raw SQL and outbound fetch; **zero entry points is `NOT_VERIFIED`, exit 3** — even with `--out` |
+| `tools/coverage-gate.mjs` | R-08 | enumerated entry points must appear in the coverage ledger, examined or excluded with a reason; an empty entry-point list is `NOT_VERIFIED`, and units the enumerator did not list are held to the same bar |
+| `tools/validate-findings.mjs` | R-09 | evidence tiers T1/T2/T3: T1 needs a real assertion after the tag (comments are stripped, so a commented-out `expect` is not an assertion), T2 needs `0 < failureRate <= 1`, T3 needs verifiers from two distinct **known** families and is capped at Medium; a DIFF run is supplementary and fails only if it claims clean |
 | `tools/estimate.mjs` | R-03, R-10 | Chapman capture–recapture; refuses to guess from zero overlap |
-| `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED`, never green |
+| `tools/tripwire.mjs` | R-11 | per-slice deterministic checks; a missing tool is `NOT_VERIFIED` (exit 3), never green, and only a check marked `"optional": true` may be downgraded — a mandatory check that says "not found" fails |
 | `tools/validate-progress.mjs` | R-15 | schema + invariants: `passed` needs exit 0, `NOT_VERIFIED` needs a reason and a human command |
-| `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family**, seals the envelope with a hash, and refuses a verdict that skips a claim or cites no evidence |
-| `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded) |
-| `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, isolated workdir, timeout and output cap; reports which controls it could not enforce; `profile`/`verify` ship and check a hardened compose file |
-| `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings |
-| `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei and fuzz output into one lead shape |
-| `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, recall per class, calibrated/inconclusive verdict that `report` has to print |
+| `tools/verifier-route.mjs` | R-09, R-16 | routes a verification to a model from **another family**, seals the envelope with a hash, and puts the **excerpts themselves** (line-numbered, hash-bound) in the prompt it writes and dispatches. Every `path:line` in a verdict is resolved against those excerpts, so a citation to a file that was not provided is rejected as "from memory"; a verdict must name a model or a family; a `refuted`/`insufficient` claim fails the gate unless `--allow-refuted` |
+| `tools/independence.mjs` | R-16 | reads what the ledger recorded: PASS, FAIL (same family), or NOT_VERIFIED (no model recorded). The builder's family comes from `--builder-family`, `independence.builderFamily` or `PIPELINE_BUILDER_MODEL`; if none of them names a known family the answer is NOT_VERIFIED/exit 3 — "openai verified a unknown build" is never a PASS |
+| `tools/sandbox.mjs` | R-14 | `run` executes untrusted code with a scrubbed env, its own workdir, timeout and output cap; the memory rlimit and the timeout compose correctly (`timeout … sh -c 'ulimit -v …; cmd'`); `--require-all` refuses **before** executing when a control cannot be enforced; `profile`/`verify` ship and check a hardened compose file |
+| `tools/fuzz-api.mjs` | R-08 | schema-driven adversarial requests against a running build; violations are leads, not findings; a run in which every case was skipped (missing credentials) is `NOT_VERIFIED`, not `CLEAN` |
+| `tools/dast.mjs` | R-08 | runs ZAP/nuclei/schemathesis where installed, and normalises semgrep, SARIF, ZAP, nuclei, junit and fuzz output into one lead shape; a scan counts as `ran` only when it produced a parseable artifact — otherwise the run is `NOT_VERIFIED`, exit 3 |
+| `tools/calibrate.mjs` | R-10 | planted-bug calibration: deterministic plan, blind answer, matching **without replacement**, `file:line[:col]` and `line-range` locations, whole-path comparison, and a pass mark derived from the sample (below 5 planted bugs nothing can be calibrated); `report` has to print the verdict |
+| `tools/plan-check.mjs` | R-04 | the plan must agree with itself **before** a line is written: every `SEC-*` id has a threat-model entry, every enumerated route/action appears in the authorization matrix, and every `REQ-*`/`SEC-*`/`NFR-*` is delivered by some slice — with no slice that names no id. Slices are `NOT_REQUIRED` until the build produces them |
+| `tools/metrics-compute.mjs` | — | `docs/12-eval/metrics.json` is **computed** from the ledger, progress, spec and findings, and names each source with its sha256; a hand-written file must say `computed: false`. No ledger ⇒ exit 3, because metrics without evidence are a story |
+| `tools/live-check.mjs` | R6 | the four things a repository cannot finish alone (cross-family verifier, container runtime, `nuclei` + `schemathesis`, blind calibration) as one checklist: `probe` says where you stand, `prep` does every safe preparation step, `verify --run` exercises the binaries. It adds **no gate** — each item names the gate that already consumes its evidence, and a binary on `PATH` or a config key is never enough |
 | `tools/expect-files.mjs` | — | artifact gates where no command can judge the work |
+
+Every gate tool above also accepts `--scope <path>` (or `--changed-since <ref>`) and then says
+so: `SCOPED (<label>): this run covers part of the project, not all of it`, and the verdict is
+`PASS (scoped to …; tag hygiene only, not a coverage claim)`. A scope that selects no files is
+exit 3 — an empty run is not a clean one.
 
 Four layers used to be "specified, not built". They are built and tested now; what remains is
 the part that needs a credential, a container runtime or a scanner binary, and
@@ -51,7 +59,8 @@ the part that needs a credential, a container runtime or a scanner binary, and
 that proves it worked. Anything still unenforceable on your host is reported as `NOT_VERIFIED`
 with the command a human must run, never silently skipped.
 
-Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**.
+Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**. What is left for a human, and
+how to finish it in four steps: **[`P6-LIVE.md`](./P6-LIVE.md)**.
 
 ---
 
@@ -177,6 +186,8 @@ Full operating instructions: **[`RUNBOOK.md`](./RUNBOOK.md)**.
 1. Create `docs/00-intake/brief.md` with your brief.
 2. Run `prompts/00-orchestrator.md` for end-to-end runs in agents with sub-agent support. Otherwise paste prompts `01` to `10` in order, one per fresh session.
 3. Install the skills the prompts name, following each repo's README: `cloudflare/security-audit-skill` and `trailofbits/skills`. If a skill is missing, each prompt has a fallback checklist.
-4. Check status with: `node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered`
+4. Check status with: `node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests`
+   (`--allow-uncovered` exists only for the spec-freeze structure run: it prints
+   `PASS (structure only; not a coverage claim)` and `trace:check` never passes it)
 
 Default stack assumed by the prompts: Next.js App Router, Drizzle + Postgres, Vitest, fast-check, Playwright, axe-core, Stryker. Swap if your repo differs.

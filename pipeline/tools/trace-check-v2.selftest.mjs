@@ -5,8 +5,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-const tool = path.join(path.dirname(new URL(import.meta.url).pathname), "trace-check-v2.mjs");
+const tool = path.join(path.dirname(fileURLToPath(import.meta.url)), "trace-check-v2.mjs");
 const SPEC = `# Demo
 ## 8. Requirements
 

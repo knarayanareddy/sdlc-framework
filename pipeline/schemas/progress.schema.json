@@ -3,44 +3,228 @@
   "$id": "https://sdlc-framework/pipeline/progress.schema.json",
   "title": "docs/progress.json",
   "type": "object",
-  "required": ["schemaVersion", "phase", "gates", "phases", "blockers", "rounds"],
+  "required": [
+    "schemaVersion",
+    "phase",
+    "gates",
+    "phases",
+    "blockers",
+    "rounds"
+  ],
   "properties": {
-    "schemaVersion": { "const": 2 },
-    "pipelineVersion": { "type": "string" },
-    "phase": { "type": ["string", "null"], "enum": ["00", "01", "02", "H1", "03", "04", "FZ", "05", "06", "07", "08", "09", "10", "11", "12", null] },
+    "schemaVersion": {
+      "const": 2
+    },
+    "pipelineVersion": {
+      "type": "string"
+    },
+    "phase": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "00",
+        "01",
+        "02",
+        "H1",
+        "03",
+        "04",
+        "FZ",
+        "05",
+        "06",
+        "07",
+        "08",
+        "09",
+        "10",
+        "11",
+        "12",
+        null
+      ]
+    },
     "gates": {
       "type": "object",
-      "propertyNames": { "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G7", "G9", "G10", "G11", "G12"] },
+      "propertyNames": {
+        "enum": [
+          "G0",
+          "G1",
+          "G2",
+          "G3",
+          "G4",
+          "G5",
+          "G7",
+          "G9",
+          "G10",
+          "G11",
+          "G12"
+        ]
+      },
       "additionalProperties": {
         "type": "object",
-        "required": ["status"],
+        "required": [
+          "status"
+        ],
         "properties": {
-          "status": { "enum": ["passed", "failed", "NOT_VERIFIED"] },
-          "command": { "type": ["string", "null"] },
-          "evidence": { "type": ["array", "null"], "items": { "type": "string" } },
-          "exitCode": { "type": ["number", "null"] },
-          "reason": { "type": ["string", "null"], "minLength": 8 },
-          "humanCommand": { "type": ["string", "null"] },
-          "at": { "type": "string" },
-          "commit": { "type": ["string", "null"] }
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "NOT_VERIFIED"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "exitCode": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 8
+          },
+          "humanCommand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commandSource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "builtin",
+              "builtin+allowlisted",
+              "allowlisted",
+              "evidence",
+              "manual",
+              "orchestrator",
+              "refused-agent-command",
+              null
+            ]
+          }
         }
       }
     },
     "phases": {
       "type": "object",
-      "additionalProperties": { "type": "object", "properties": { "status": { "enum": ["started", "done", "blocked"] } } }
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "started",
+              "done",
+              "blocked"
+            ]
+          }
+        }
+      }
     },
     "blockers": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "text", "fallback"],
-        "properties": { "id": { "type": "string" }, "phase": { "type": "string" }, "text": { "type": "string" }, "fallback": { "type": "string", "minLength": 8 } }
+        "required": [
+          "id",
+          "text",
+          "fallback"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "fallback": {
+            "type": "string",
+            "minLength": 8
+          }
+        }
       }
     },
     "rounds": {
       "type": "object",
-      "properties": { "full": { "type": "number", "minimum": 0, "maximum": 3 }, "diff": { "type": "number", "minimum": 0 } }
+      "properties": {
+        "full": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "diff": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "description": "Derived from roundLog. JSON Schema cannot count, so the agreement between the two is enforced by validate-progress, not here \u2014 see pipeline/tools/schemas.test.mjs."
+    },
+    "baseCommit": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "commit recorded at init; protected-paths diffs against it rather than HEAD"
+    },
+    "roundLog": {
+      "type": "array",
+      "description": "One entry per red-team round, written by `phase done 08`/`09` from the findings file's mode. `rounds` is derived from this; validate-progress fails when the two disagree (a rule JSON Schema cannot express).",
+      "items": {
+        "type": "object",
+        "required": [
+          "phase",
+          "mode",
+          "at"
+        ],
+        "properties": {
+          "phase": {
+            "enum": [
+              "08",
+              "09"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "FULL",
+              "DIFF"
+            ]
+          },
+          "at": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

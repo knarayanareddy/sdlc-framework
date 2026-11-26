@@ -10,6 +10,7 @@
 // Snapshot sources: file: URLs always work (used by the self-test); http(s) needs
 // network access and --fetch. Without --fetch, a missing snapshot is `page-unreachable`.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parseArgs, sha256, ensureDir, paint, fail } from "./lib/common.mjs";
 
@@ -42,6 +43,29 @@ function normalise(text) {
     .toLowerCase();
 }
 
+// A `file:` source is a page the agent could have written itself, so it may only point at
+// the research directory or the system temp dir — otherwise a builder can vouch for its own
+// claim by writing the "page" it quotes (M-01).
+function fileSourceAllowed(target) {
+  const allowed = [path.resolve(process.cwd(), "docs", "01-research"), path.resolve(os.tmpdir())];
+  const real = (() => {
+    try {
+      return fs.realpathSync(target);
+    } catch {
+      return path.resolve(target);
+    }
+  })();
+  return allowed.some((root) => real === root || real.startsWith(`${root}${path.sep}`));
+}
+
+const provenance = (snap) => ({
+  // What was hashed, what the hash is, and how it got here. The reader's own `accessed`
+  // date is self-reported; this is not.
+  snapshotFile: snap.file ? path.relative(process.cwd(), snap.file).split(path.sep).join("/") : null,
+  snapshotSha256: snap.text ? sha256(snap.text) : null,
+  snapshotVia: snap.status,
+});
+
 async function snapshot(url) {
   const file = path.join(snapshotsDir, `${sha256(url)}.txt`);
   if (fs.existsSync(file)) return { status: "cached", text: fs.readFileSync(file, "utf8"), file };
@@ -51,6 +75,9 @@ async function snapshot(url) {
     const raw = url.slice(5).replace(/^\/\//, "");
     const target = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
     if (!fs.existsSync(target)) return { status: "page-unreachable", text: null, file };
+    if (!fileSourceAllowed(target)) {
+      return { status: "page-unreachable", text: null, file, note: "file: sources are limited to docs/01-research/ and the temp dir" };
+    }
     const text = fs.readFileSync(target, "utf8");
     ensureDir(snapshotsDir);
     fs.writeFileSync(file, text);
@@ -80,7 +107,7 @@ const extractFiles = fs.existsSync(extractsDir)
 
 const lines = [];
 const rows = [];
-const totals = { claims: 0, verified: 0, notFound: 0, unreachable: 0 };
+const totals = { claims: 0, verified: 0, notFound: 0, unreachable: 0, quarantined: 0 };
 const seen = new Map();
 
 for (const file of extractFiles) {
@@ -104,9 +131,16 @@ for (const file of extractFiles) {
       continue;
     }
     const haystack = normalise(snap.text);
+    // A page that tried to instruct the reader is evidence of an attack, not evidence for a
+    // claim: its quotes are set aside, never written to the ledger, and counted separately
+    // (M-01). It used to log one line and then verify the claim anyway.
+    if (d.injectionSuspected) {
+      totals.quarantined += (d.claims ?? []).length;
+      lines.push(`quarantined ${d.url} :: injection suspected — ${(d.claims ?? []).length} claim(s) set aside, no ledger rows`);
+      continue;
+    }
     for (const claim of d.claims ?? []) {
       totals.claims += 1;
-      if (d.injectionSuspected) lines.push(`injection-suspected ${d.url}`);
       const needle = normalise(claim.quote ?? "");
       const tooShort = needle.length < 8;
       const found = !tooShort && haystack.includes(needle);
@@ -117,10 +151,11 @@ for (const file of extractFiles) {
           id = `E-${String(seen.size + 1).padStart(2, "0")}`;
           seen.set(d.url, id);
         }
+        const prov = provenance(snap);
         rows.push(
-          `| ${id} | ${claim.claim ?? ""} | ${d.url} | ${d.accessed ?? "unknown"} | ${d.sourceType ?? "unknown"} | ${claim.confidence ?? "?"} | verified |`.replace(/\n/g, " "),
+          `| ${id} | ${claim.claim ?? ""} | ${d.url} | ${d.accessed ?? "unknown"} | ${d.sourceType ?? "unknown"} | ${claim.confidence ?? "?"} | verified | \`${String(prov.snapshotSha256).slice(0, 16)}…\` (${prov.snapshotVia}) |`.replace(/\n/g, " "),
         );
-        lines.push(`verified ${d.url} :: ${needle.slice(0, 60)}${needle.length > 60 ? "…" : ""}`);
+        lines.push(`verified ${d.url} :: ${needle.slice(0, 60)}${needle.length > 60 ? "…" : ""} :: snapshot ${prov.snapshotSha256} (${prov.snapshotVia})`);
       } else {
         totals.notFound += 1;
         lines.push(
@@ -144,18 +179,24 @@ if (writeLedger) {
     "",
     "Only `verified` rows may support thesis, ideas-ranked or any requirement rationale.",
     "",
-    "| E-id | claim | source URL | date accessed | source type | confidence | status |",
-    "|---|---|---|---|---|---|---|",
+    "| E-id | claim | source URL | date accessed | source type | confidence | status | snapshot |",
+    "|---|---|---|---|---|---|---|---|",
   ].join("\n");
   ensureDir(path.dirname(writeLedger));
   fs.writeFileSync(writeLedger, `${header}\n${rows.join("\n")}\n`);
 }
 
-console.log(`claims: ${totals.claims}  verified: ${totals.verified}  not-found: ${totals.notFound}  unreachable pages: ${totals.unreachable}`);
+console.log(`claims: ${totals.claims}  verified: ${totals.verified}  not-found: ${totals.notFound}  unreachable pages: ${totals.unreachable}  quarantined: ${totals.quarantined}`);
+if (totals.quarantined) console.log(paint.yellow(`${totals.quarantined} claim(s) were quarantined: a page that tries to instruct the reader cannot support the thesis`));
 if (totals.notFound) console.log(`not-found rate: ${rate.toFixed(1)}% (threshold ${maxNotFound}%)`);
 if (writeLedger) console.log(`ledger written: ${writeLedger} (${rows.length} verified rows)`);
 console.log(`log: ${logPath}`);
 
+if (totals.verified === 0 && totals.quarantined > 0) {
+  console.log(paint.yellow("NOT_VERIFIED: every claim was quarantined, so no quote supports anything"));
+  console.log("human command: review the flagged pages by hand; if they are safe, re-run the reader with the page's text pasted in and injectionSuspected reviewed");
+  process.exit(3);
+}
 if (totals.claims === 0) {
   console.log(paint.yellow("warn: no claims found; the reader agent produced nothing to check"));
   console.log("RESULT: FAIL");

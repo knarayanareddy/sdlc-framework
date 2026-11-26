@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Gate ledger CLI: verify | show | append | demo
-//   node pipeline/tools/gate-ledger.mjs verify --path docs/gate-ledger.jsonl
+//   node pipeline/tools/gate-ledger.mjs verify --path docs/gate-ledger.jsonl [--progress docs/progress.json] [--require-hmac]
 //   node pipeline/tools/gate-ledger.mjs demo        # tamper test, exit 0 when tampering is caught
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appendLedger, readLedger, verifyLedger } from "./lib/ledger.mjs";
+import { appendLedger, readLedger, readLedgerSafe, verifyLedger } from "./lib/ledger.mjs";
 import { STATUSES } from "./lib/gates.mjs";
 import { fail, ok, paint, parseArgs, readJson } from "./lib/common.mjs";
 
@@ -37,11 +37,36 @@ switch (command) {
   case "verify": {
     const file = flags.path ?? "docs/gate-ledger.jsonl";
     if (!fs.existsSync(file)) fail(`no ledger at ${file}`);
-    const result = verifyLedger(file);
-    const entries = readLedger(file);
+
+    // Cross-checking against progress.json is what catches a truncated tail: the remaining
+    // chain is still valid, so the chain alone can never notice deleted entries.
+    let progressPath = flags.progress ?? null;
+    if (!progressPath) {
+      const sibling = path.join(path.dirname(file), "progress.json");
+      if (path.basename(file) === "gate-ledger.jsonl" && fs.existsSync(sibling)) progressPath = sibling;
+    }
+    let progress = null;
+    if (progressPath) {
+      if (!fs.existsSync(progressPath)) fail(`--progress ${progressPath} does not exist`);
+      progress = readJson(progressPath);
+    }
+
+    const { entries, error } = readLedgerSafe(file);
+    if (error) {
+      console.log(`entries: ${entries.length}  chain: BROKEN`);
+      console.log(paint.red(`PROBLEM ${error}`));
+      console.log("RESULT: FAIL");
+      process.exit(1);
+    }
+    const result = verifyLedger(file, { progress, requireHmac: Boolean(flags["require-hmac"]) });
     const withoutManifest = entries.filter((e) => !e.filesGivenToVerifier).length;
     const withoutModel = entries.filter((e) => !e.modelFamily).length;
+    const sealedEntries = entries.filter((e) => e.hmac).length;
     console.log(`entries: ${result.count}  chain: ${result.ok ? "intact" : "BROKEN"}`);
+    if (progress) console.log(`cross-checked against ${progressPath}: ${Object.keys(progress.gates ?? {}).length} gate(s), ${Object.values(progress.phases ?? {}).filter((p) => p?.status === "done").length} phase(s)`);
+    else console.log(paint.yellow("warn: no progress.json to cross-check against, so a truncated tail cannot be detected"));
+    if (result.ok && sealedEntries) console.log(`sealed: ${sealedEntries}/${result.count} entries carry an HMAC`);
+    if (result.ok && !sealedEntries) console.log(paint.yellow("unsealed: no PIPELINE_LEDGER_KEY, so a recomputed chain is not detectable (accidental-edit checksum only)"));
     if (!result.ok) console.log(paint.red(`PROBLEM ${result.error}`));
     if (withoutManifest) console.log(paint.yellow(`warn: ${withoutManifest}/${result.count} entries record no filesGivenToVerifier (context manifest missing)`));
     if (withoutModel) console.log(paint.yellow(`warn: ${withoutModel}/${result.count} entries record no modelFamily (NOT_VERIFIED: single-model-family)`));
@@ -51,7 +76,8 @@ switch (command) {
   }
   case "show": {
     const file = flags.path ?? "docs/gate-ledger.jsonl";
-    const entries = readLedger(file);
+    const { entries, error } = readLedgerSafe(file);
+    if (error) fail(error);
     if (flags.json) {
       console.log(JSON.stringify(entries, null, 2));
     } else {
@@ -84,11 +110,13 @@ switch (command) {
     break;
   case "export": {
     const file = flags.path ?? "docs/gate-ledger.jsonl";
-    console.log(JSON.stringify({ exportedAt: new Date().toISOString(), entries: readLedger(file) }, null, 2));
+    const { entries, error } = readLedgerSafe(file);
+    if (error) fail(error);
+    console.log(JSON.stringify({ exportedAt: new Date().toISOString(), entries }, null, 2));
     break;
   }
   default:
     fail(`unknown command "${command}". Use: verify | show | append | demo | export`);
 }
 
-void readJson;
+

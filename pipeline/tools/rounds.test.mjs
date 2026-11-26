@@ -1,0 +1,71 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { recordRound } from "./lib/rounds.mjs";
+
+const TOOL = path.join(path.dirname(fileURLToPath(import.meta.url)), "validate-progress.mjs");
+
+function findings(mode) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rounds-"));
+  const file = path.join(dir, "findings.json");
+  fs.writeFileSync(file, JSON.stringify({ run: "RUN-1", mode, findings: [] }));
+  return file;
+}
+
+test("a FULL round at phase 08 counts as one FULL round", () => {
+  const progress = { rounds: { full: 0, diff: 0 } };
+  assert.ok(recordRound(progress, "08", findings("FULL")));
+  assert.deepEqual(progress.rounds, { full: 1, diff: 0 });
+  assert.equal(progress.roundLog.length, 1);
+  assert.equal(progress.roundLog[0].mode, "FULL");
+});
+
+test("phase 09 can be a DIFF round, and the two counts do not get merged", () => {
+  const progress = { rounds: { full: 0, diff: 0 } };
+  recordRound(progress, "08", findings("FULL"));
+  recordRound(progress, "09", findings("DIFF"));
+  assert.deepEqual(progress.rounds, { full: 1, diff: 1 });
+});
+
+test("re-running the same phase replaces its round instead of double counting", () => {
+  const progress = { rounds: { full: 0, diff: 0 } };
+  const file = findings("FULL");
+  recordRound(progress, "08", file);
+  recordRound(progress, "08", file);
+  assert.deepEqual(progress.rounds, { full: 1, diff: 0 }, "a re-run of phase 08 is still one round");
+  assert.equal(progress.roundLog.length, 1);
+});
+
+test("a phase that is not a red-team round records nothing", () => {
+  const progress = { rounds: { full: 0, diff: 0 } };
+  assert.equal(recordRound(progress, "10", findings("FULL")), null);
+  assert.deepEqual(progress.rounds, { full: 0, diff: 0 });
+});
+
+test("missing or unreadable findings cannot be read as a round", () => {
+  const progress = { rounds: { full: 0, diff: 0 } };
+  assert.equal(recordRound(progress, "08", "/nonexistent/findings.json"), null);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rounds-"));
+  const broken = path.join(dir, "findings.json");
+  fs.writeFileSync(broken, "{not json");
+  assert.equal(recordRound(progress, "08", broken), null);
+  assert.deepEqual(progress.rounds, { full: 0, diff: 0 });
+});
+
+test("a fourth FULL round is visible to validate-progress, so the stop rule can fire", () => {
+  const progress = { schemaVersion: 1, rounds: { full: 0, diff: 0 }, phases: {}, gates: {} };
+  for (const phase of ["08", "09"]) recordRound(progress, phase, findings("FULL"));
+  // Two more FULL rounds would need more phases, so simulate what the log would look like.
+  progress.roundLog.push({ phase: "08", mode: "FULL", at: new Date().toISOString() }, { phase: "09", mode: "FULL", at: new Date().toISOString() });
+  progress.rounds = { full: 4, diff: 0 };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rounds-"));
+  const file = path.join(dir, "progress.json");
+  fs.writeFileSync(file, JSON.stringify(progress));
+  const res = spawnSync("node", [TOOL, file, "--json"], { encoding: "utf8" });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout, /caps FULL rounds at 3/);
+});

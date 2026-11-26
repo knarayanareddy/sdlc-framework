@@ -55,12 +55,12 @@ node pipeline/bin/pipeline.mjs phase done 01
 | 02 spec | G2 | `gate G2 --builtin trace:structure` |
 | H1 digest | — | `phase done H1` (needs `docs/02-spec/DECISIONS.md`) |
 | 03 design | G3 | `gate G3 --evidence docs/03-design/design-brief.md,docs/03-design/tokens.json` |
-| 04 architecture | G4 | `gate G4 --evidence docs/04-architecture/threat-model.md,…` |
+| 04 architecture | G4 | `gate G4 --builtin plan` (threat model + authz matrix must agree with the spec) |
 | FZ freeze | — | `phase done FZ` (hashes `SPEC.md`) |
 | 05 tests | G5 | `gate G5 --builtin trace:freeze,trace:check,unit` |
-| 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` |
+| 06 build | — | per slice: `tripwire.mjs`, then `phase done 06` (checks `plan:slices`: every id is delivered) |
 | 07 QA | G7 | `gate G7 --builtin types,lint,unit,build` |
-| 08 red team | — | `phase done 08` (entrypoints + coverage + findings) |
+| 08 red team | G8 | `gate G8 --builtin entrypoints,coverage,findings` |
 | 09 patch | G9 | `gate G9 --builtin findings,coverage` |
 | 10 release | G10 | `report`, then `gate G10 --builtin ledger,progress` |
 | 11 deploy | G11 | `gate G11 --not-verified --reason … --human-command …` |
@@ -98,11 +98,17 @@ Gates that use them:
 |---|---|
 | G0 | `gate G0 --builtin ledger,selftests,sandbox` |
 | G7 | `gate G7 --builtin types,lint,unit,build,fuzz` |
+| G8 | `gate G8 --builtin entrypoints,coverage,findings,fuzz` |
 | G9 | `gate G9 --builtin findings,coverage,independence` |
 | G12 | `gate G12 --builtin metrics,calibrate` |
 
 An exit code of **3** from any tool means "I could not evaluate this": the orchestrator records
 `NOT_VERIFIED` with the reason and the printed human command, never a pass.
+
+**G9 needs to know who wrote the code.** `independence.mjs` compares each recorded verifier's family
+with the builder's, so it refuses to answer (exit 3, NOT_VERIFIED) until `independence.builderFamily`
+is set — `pipeline init` derives it from `PIPELINE_BUILDER_MODEL` when that is exported, and warns
+when it cannot. There is no green until a human names the builder.
 
 ## 4 · When a defect will not die
 
@@ -129,8 +135,49 @@ node pipeline/bin/pipeline.mjs estimate --a 6 --b 5 --m 4 --write
 node pipeline/bin/pipeline.mjs report
 ```
 
-`report` writes `docs/FINAL-REPORT.md` from the ledger, including the NOT_VERIFIED list and
-the calibration caveat. Fill in the narrative; do not edit the gate table.
+`report` writes `docs/FINAL-REPORT.md` from the ledger, including the NOT_VERIFIED list, the
+round labels, the metrics provenance line and the calibration caveat. It is also re-written
+automatically when phases 10, 11 and 12 complete, so the staged report cannot describe an older
+ledger than the one on disk. Fill in the narrative; do not edit the gate table.
+
+`docs/12-eval/metrics.json` is **computed**, not written by hand: `gate G12 --builtin metrics`
+runs `tools/metrics-compute.mjs`, which reads the ledger, `docs/progress.json`, the spec and the
+findings, and records each source with its sha256 under `derivedFrom`. A file you write yourself
+must say `computed: false`, and the report will label it hand-written.
+
+### 6.1 · Brownfield: run the gates on what you changed
+
+`entrypoints`, `coverage`, `trace:check` and `plan` accept a scope:
+
+```bash
+node pipeline/tools/entrypoints.mjs --scope src/app/api --out docs/08-redteam/run-1/entrypoints.json
+node pipeline/tools/coverage-gate.mjs --changed-since origin/main --ledger docs/08-redteam/run-1/coverage-ledger.json
+node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --scope src/lib
+```
+
+A scoped run prints `SCOPED (<label>): this run covers part of the project, not all of it` and
+its verdict is never a bare PASS (`PASS (scoped to …; tag hygiene only, not a coverage claim)`).
+A scope that selects no files exits 3. Do not record a scoped run as G7/G8's only evidence for a
+release: it covers part of the project by construction.
+
+## 6.2 · The four things only you can finish
+
+```bash
+node pipeline/bin/pipeline.mjs live           # where you stand, and the command that fixes each item
+node pipeline/bin/pipeline.mjs live prep      # write every artifact that does not need your key
+node pipeline/bin/pipeline.mjs live verify --run   # exercise the binaries; exit 0 only when all four are in place
+```
+
+| Item | Ready when | Flips |
+|---|---|---|
+| verifier | a model from a different family answers an envelope | `G9 --builtin independence` |
+| sandbox | `docker info` answers, and a command ran inside the container | `G0 --builtin sandbox` |
+| scanners | `nuclei -version` and `schemathesis --version` both work | `G8 --builtin dast` |
+| calibration | `calibrate.mjs status` exits 0 for this pipeline version | `G12 --builtin calibrate` |
+
+The step-by-step procedure, including the blind planted-bug round, is
+**[`P6-LIVE.md`](./P6-LIVE.md)**. `live-check` adds no gate of its own: readiness is not a
+deliverable, the evidence each item produces is.
 
 ## 7 · The worked example
 

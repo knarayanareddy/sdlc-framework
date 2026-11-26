@@ -25,7 +25,24 @@ if (!fs.existsSync(ledgerPath)) {
 const userConfig = fs.existsSync(configPath) ? readJson(configPath) : {};
 const indepCfg = userConfig.independence ?? {};
 const table = mergeFamilies(flags.families ?? indepCfg.families, (f) => readJson(f));
-const builderFamily = String(flags["builder-family"] ?? indepCfg.builderFamily ?? process.env.PIPELINE_BUILDER_FAMILY ?? "unknown");
+
+
+// The builder's family, from whatever the operator supplied: a family name, a model id, or
+// the model id the runner already knows (PIPELINE_BUILDER_MODEL). "unknown" is not a value
+// to compare against — see the row loop.
+function normaliseFamily(value) {
+  const v = String(value ?? "").trim();
+  if (!v || v === "unknown") return { family: "unknown", source: null };
+  if (Object.prototype.hasOwnProperty.call(table, v.toLowerCase())) return { family: v.toLowerCase(), source: "declared family" };
+  const f = familyOf(v, table);
+  return f === "unknown" ? { family: "unknown", source: null } : { family: f, source: `model id "${v}"` };
+}
+
+const declared = normaliseFamily(flags["builder-family"] ?? indepCfg.builderFamily ?? process.env.PIPELINE_BUILDER_FAMILY);
+const fromModel = normaliseFamily(flags["builder-model"] ?? indepCfg.builderModel ?? process.env.PIPELINE_BUILDER_MODEL ?? process.env.PIPELINE_BUILDER_MODEL);
+const builder = declared.family !== "unknown" ? declared : fromModel;
+const builderFamily = builder.family;
+const builderFamilySource = builder.source;
 const requireFor = String(flags.require ?? (indepCfg.requireFor ?? ["G3", "G4", "G7", "G9", "G10", "G11", "G12"]).join(","))
   .split(",")
   .map((s) => s.trim())
@@ -76,11 +93,24 @@ for (const gate of requireFor) {
     rows.push({ gate, state: "NOT_APPLICABLE", detail: "the gate itself is NOT_VERIFIED, so independence does not apply" });
     continue;
   }
+  if (builderFamily === "unknown") {
+    // This is the fail-open (F-02): with the builder's family unknown, every recorded verifier
+    // family counted as INDEPENDENT — "openai verified a unknown build", printed green. A
+    // comparison against nothing is not independence.
+    rows.push({
+      gate,
+      state: "NOT_VERIFIED",
+      detail: "the builder's own family is unknown, so nothing can be shown to be independent of it",
+      recorded: entry.modelFamily ?? null,
+    });
+    unverified++;
+    continue;
+  }
   const { family, why } = resolveFamily(entry.modelFamily);
   if (family === "unknown") {
     rows.push({ gate, state: "NOT_VERIFIED", detail: why, recorded: entry.modelFamily ?? null });
     unverified++;
-  } else if (builderFamily !== "unknown" && family === builderFamily) {
+  } else if (family === builderFamily) {
     rows.push({ gate, state: "SAME_FAMILY", detail: `verifier is "${family}", the same family as the builder`, recorded: entry.modelFamily });
     sameFamily++;
   } else {
@@ -94,6 +124,7 @@ const others = [...lastByGate.keys()].filter((g) => !requireFor.includes(g));
 
 const result = {
   builderFamily,
+  builderFamilySource,
   requireFor,
   independent,
   sameFamily,
@@ -112,20 +143,26 @@ if (flags.out) {
 if (flags.json) {
   console.log(JSON.stringify(result, null, 2));
 } else {
-  console.log(`builder family: ${builderFamily === "unknown" ? paint.yellow("unknown (set independence.builderFamily)") : builderFamily}`);
+  console.log(`builder family: ${builderFamily === "unknown" ? paint.yellow("unknown — independence cannot be established") : `${builderFamily}${builderFamilySource ? ` (${builderFamilySource})` : ""}`}`);
   for (const r of rows) {
     const mark = r.state === "INDEPENDENT" ? paint.green("ok  ") : r.state === "SAME_FAMILY" ? paint.red("FAIL") : paint.yellow("??  ");
     console.log(`  ${mark} ${r.gate.padEnd(4)} ${r.state.padEnd(12)} ${r.detail}`);
   }
   console.log(`independent: ${independent}  same family: ${sameFamily}  not verified: ${unverified}`);
   if (sameFamily) console.log(paint.red("RESULT: FAIL — at least one gate was verified by the builder's own model family"));
-  else if (unverified) console.log(paint.yellow(`NOT_VERIFIED: ${unverified} required gate(s) have no independent verifier on record`));
-  else if (unverified) console.log(paint.yellow("RESULT: NOT_VERIFIED — the report must say the verification was not independent"));
+  else if (unverified) console.log(paint.yellow(`RESULT: NOT_VERIFIED — ${unverified} required gate(s) have no independent verifier on record`));
   else console.log(paint.green("RESULT: PASS"));
 }
 
 if (sameFamily > 0) process.exit(1);
 if (unverified > 0) {
+  if (builderFamily === "unknown") {
+    // One line, and self-contained: `pipeline gate` records the human command verbatim, so a
+    // command split over three lines is recorded as a sentence that cannot be run.
+    console.log(`human command: node pipeline/tools/independence.mjs --ledger <ledger> --builder-family <anthropic|openai|google|…>   # or set independence.builderFamily / PIPELINE_BUILDER_MODEL`);
+    if (flags.strict) fail("independence is required here and it was not established", 3);
+    process.exit(3);
+  }
   console.log("human command: re-record each gate that lacks a verifier with --model <model id from another family>");
   console.log("               node pipeline/tools/verifier-route.mjs status   # shows what is routable");
   if (flags.strict) fail("independence is required here and it was not established", 3);

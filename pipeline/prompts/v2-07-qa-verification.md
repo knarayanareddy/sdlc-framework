@@ -23,7 +23,7 @@ ROLE: independent QA lead. You assume the code is wrong until shown otherwise. Y
    node pipeline/tools/verifier-route.mjs route --phase 07 --gate G7 \
      --author-model "$PIPELINE_BUILDER_MODEL" --kind compliance \
      --task "spec-to-code compliance" --claims docs/07-qa/claims.json \
-     --files docs/02-spec/SPEC.md,src --out docs/05-test/verifier-envelope.json \
+     --files docs/02-spec/SPEC.md --out docs/05-test/verifier-envelope.json \
      --write-prompt docs/05-test/verifier-prompt.md
    PIPELINE_VERIFIER_CMD="node pipeline/examples/verifier-transport.example.mjs" \
      node pipeline/tools/verifier-route.mjs dispatch --envelope docs/05-test/verifier-envelope.json \

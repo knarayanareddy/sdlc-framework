@@ -63,6 +63,21 @@ else {
     if (typeof p.rounds[k] !== "number" || p.rounds[k] < 0) problems.push(`rounds.${k} must be a number >= 0`);
   }
   if ((p.rounds.full ?? 0) > 3) problems.push("rounds.full exceeds 3; the framework caps FULL rounds at 3");
+  // `rounds` is derived from `roundLog` (phase done 08/09). If the two disagree, one of them
+  // was edited by hand — which is exactly what the counter is supposed to prevent.
+  if (Array.isArray(p.roundLog)) {
+    const full = p.roundLog.filter((r) => r.mode === "FULL").length;
+    const diff = p.roundLog.filter((r) => r.mode === "DIFF").length;
+    if ((p.rounds.full ?? 0) !== full || (p.rounds.diff ?? 0) !== diff) {
+      problems.push(`rounds (FULL=${p.rounds.full ?? 0} DIFF=${p.rounds.diff ?? 0}) disagrees with roundLog (FULL=${full} DIFF=${diff})`);
+    }
+  }
+  if (Array.isArray(p.roundLog)) {
+    for (const r of p.roundLog) {
+      if (!["08", "09"].includes(String(r.phase))) problems.push(`roundLog: phase ${JSON.stringify(r.phase)} cannot host a red-team round`);
+      if (!["FULL", "DIFF"].includes(r.mode)) problems.push(`roundLog: mode must be FULL or DIFF (found ${JSON.stringify(r.mode)})`);
+    }
+  }
 }
 
 const json = {

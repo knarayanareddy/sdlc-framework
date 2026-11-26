@@ -9,8 +9,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { paint } from "./lib/common.mjs";
+import { fileURLToPath } from "node:url";
 
-const HERE = path.dirname(new URL(import.meta.url).pathname);
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PIPELINE = path.resolve(HERE, "..");
 const EXAMPLE = path.join(PIPELINE, "examples", "mini-app");
 const CLI = path.join(PIPELINE, "bin", "pipeline.mjs");
@@ -74,7 +75,7 @@ step("", ["gate", "G3", "--evidence", "docs/03-design/design-brief.md,docs/03-de
 step("", ["phase", "done", "03"]);
 
 step("phase 04", ["phase", "start", "04"]);
-step("", ["gate", "G4", "--evidence", "docs/04-architecture/threat-model.md,docs/04-architecture/authz-matrix.md"]);
+step("", ["gate", "G4", "--builtin", "plan"]);
 step("", ["phase", "done", "04"]);
 
 step("phase FZ (freeze)", ["phase", "start", "FZ"]);
@@ -92,6 +93,7 @@ step("", ["gate", "G7", "--builtin", "unit", "--model", "gpt-5"]);
 step("", ["phase", "done", "07"]);
 
 step("phase 08", ["phase", "start", "08"]);
+step("", ["gate", "G8", "--builtin", "entrypoints,coverage,findings"]);
 step("", ["phase", "done", "08"]);
 
 step("phase 09", ["phase", "start", "09"]);

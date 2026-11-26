@@ -9,7 +9,7 @@ Every claim below is a command you can run. Nothing in this file is aspirational
 
 | Layer | Built and tested | What only you can do |
 |---|---|---|
-| Cross-model verifier routing | `verifier-route.mjs`, `independence.mjs`, `lib/families.mjs`, transport example, 18 tests | supply one endpoint + key, set `independence.builderFamily` |
+| Cross-model verifier routing | `verifier-route.mjs`, `independence.mjs`, `lib/families.mjs`, transport example, 22 tests | supply one endpoint + key, set `independence.builderFamily` |
 | Sandbox profile | `sandbox.mjs` (run/check/profile/verify), 9 tests | install docker (or bwrap) and run the generated profile |
 | DAST / fuzz | `fuzz-api.mjs` (real fuzzer), `dast.mjs` (adapters + `leads` normaliser), 13 tests | install ZAP/nuclei/schemathesis, or use the built-in fuzzer only |
 | Planted-bug calibration | `calibrate.mjs` (plan/template/score/status), `lib/bug-classes.mjs`, 11 tests | run one plant on a throwaway branch with a second agent |
@@ -29,8 +29,10 @@ Reason it exists: a second opinion from the same model family is not a second op
 ```bash
 node pipeline/tools/verifier-route.mjs status          # families, author, routable targets
 node pipeline/tools/verifier-route.mjs route --phase 07 --gate G7 --author-model claude-sonnet-4 \
-  --task "spec-to-code compliance" --claims claims.json --files docs/02-spec/SPEC.md,src --out env.json
+  --task "spec-to-code compliance" --claims claims.json --files docs/02-spec/SPEC.md --out env.json
 node pipeline/tools/verifier-route.mjs dispatch --envelope env.json --out verdicts.json
+# the envelope carries the excerpts; the prompt is line-numbered, so a verdict can cite path:line
+# and verifier-route checks that citation against what was sent (a file it did not send is rejected)
 node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pipeline.config.json
 ```
 
@@ -39,7 +41,10 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
   claims "confirmed" without a `file:line`.
 - The verifier family must differ from the author's. Unknown model → `family: unknown` → refused.
 - `independence.mjs` reads what the ledger *recorded* and returns PASS / FAIL (same family) /
-  NOT_VERIFIED (no model recorded). `pipeline gate G9 --builtin independence` runs it, and
+  NOT_VERIFIED (no model recorded, or **no known builder family**: with `builderFamily` left at
+  `unknown` nothing can be independent of it, so the answer is NOT_VERIFIED and exit 3).
+  Set `independence.builderFamily`, pass `--builder-family`, or export `PIPELINE_BUILDER_MODEL`
+  (`pipeline init` derives the family from it when it can, and warns when it cannot). `pipeline gate G9 --builtin independence` runs it, and
   exit 3 lands in the ledger as NOT_VERIFIED with the reason and a human command.
 - `pipeline report` prints the independence verdict in `FINAL-REPORT.md`.
 
@@ -65,7 +70,8 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
    export PIPELINE_VERIFIER_URL="https://api.example.com/v1/chat/completions"
    export PIPELINE_VERIFIER_KEY="…"
    export PIPELINE_VERIFIER_MODEL="gpt-5"
-   node pipeline/examples/verifier-transport.example.mjs --dry-run    # inspect the request, no network
+   echo '{"prompt":"…","envelope":{}}' | node pipeline/examples/verifier-transport.example.mjs --dry-run   # inspect the request, no network
+   # (it reads the envelope on stdin; without stdin it exits 3 rather than guessing)
    ```
 
    If your provider differs, copy `pipeline/examples/verifier-transport.example.mjs` and change
@@ -119,7 +125,9 @@ are dropped and counted), a fresh temporary workdir, `--copy` isolation so the c
 write to your tree, a hard timeout, an output cap, and a JSON record of what was enforced.
 
 `run` applies **only where available**: a network namespace, a memory rlimit. Anything it could
-not enforce is printed as `NOT_VERIFIED` and, with `--require-all`, refuses to exit 0.
+not enforce is printed as `NOT_VERIFIED`. With `--require-all` it refuses **before** it runs
+anything: the command is not executed at all and the tool exits 3 (the old order ran first and
+refused afterwards, so "refused" still meant "executed").
 
 `profile` generates a compose file with `network_mode: none`, `read_only`, `cap_drop: ALL`,
 `no-new-privileges`, `pids_limit`, `mem_limit`, `ulimits`, `tmpfs`, a non-root uid, and no
@@ -300,7 +308,7 @@ procedure, in order:
 
 ```bash
 node pipeline/tools/calibrate.mjs status --dir calibration
-# calibrated for 2.0.0 — recall 80.0% on 10 planted bugs
+# NOT_VERIFIED: calibration has not been run for pipeline 2.6.0
 ```
 
 and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
@@ -319,7 +327,8 @@ and `docs/FINAL-REPORT.md` says the same thing, with the sample size.
 ## 5 · The four commands that tell you where you stand
 
 ```bash
-node pipeline/tools/run-selftests.mjs                  # 17 groups: the code is intact
+node pipeline/tools/live-check.mjs probe                # all four layers at once, as a checklist
+node pipeline/tools/run-selftests.mjs                  # 23 test files + the traceability selftest: the code is intact
 node pipeline/tools/verifier-route.mjs status          # is a cross-family verifier available?
 node pipeline/tools/sandbox.mjs check                  # what can this host actually enforce?
 node pipeline/tools/dast.mjs plan                       # which scanners are installed?
@@ -327,7 +336,9 @@ node pipeline/tools/calibrate.mjs status --dir calibration   # is the red team c
 ```
 
 Anything that answers `NOT_VERIFIED` is not a failure of the pipeline — it is the honest state
-of your environment, and it is the exact list of what is left to integrate.
+of your environment, and it is the exact list of what is left to integrate. `live-check.mjs`
+runs all four at once and prints the command that fixes each: **[`P6-LIVE.md`](./P6-LIVE.md)**
+walks through them in order, including the blind calibration procedure.
 
 ## 6 · What is still not built, and why
 

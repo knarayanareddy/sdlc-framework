@@ -6,8 +6,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { PHASES } from "./lib/gates.mjs";
+import { fileURLToPath } from "node:url";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const promptsDir = path.resolve(here, "..", "prompts");
 const toolsDir = path.resolve(here);
 

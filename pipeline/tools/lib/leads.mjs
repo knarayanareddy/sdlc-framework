@@ -55,6 +55,24 @@ export function fromZap(json) {
   return out;
 }
 
+// Schemathesis and most property-based runners emit JUnit XML. Without this parser the
+// `junit` format was declared in dast.mjs and silently produced zero leads (B-02).
+export function fromJunit(xml) {
+  const out = [];
+  const attr = (text, name) => (String(text).match(new RegExp(`${name}="([^"]*)"`)) ?? [])[1] ?? "";
+  for (const m of String(xml).matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    const attrs = m[1] ?? "";
+    const body = m[2] ?? "";
+    const failure = body.match(/<(failure|error)\b([^>]*)>([\s\S]*?)<\/\1>/) ?? body.match(/<(failure|error)\b([^>]*?)\/>/);
+    if (!failure) continue;
+    const message = (attr(failure[2], "message") || (failure[3] ?? "").trim() || "failed").slice(0, 300);
+    const name = attr(attrs, "name") || attr(attrs, "classname") || "testcase";
+    const severity = String(failure[1]) === "error" ? "high" : "medium";
+    out.push(lead("junit", name, attr(attrs, "file") || "unknown", 0, message, severity));
+  }
+  return out;
+}
+
 export function fromNuclei(jsonl) {
   const out = [];
   for (const line of String(jsonl).split("\n")) {

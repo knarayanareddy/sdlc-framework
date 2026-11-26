@@ -29,6 +29,8 @@ ROLE: test architect. Your goal is a suite that fails when the product is wrong,
 
    ```bash
    node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered --baseline docs/05-test/baseline.json
+   # ^ the ONE structural call: it FREEZES the baseline. From here on the coverage claim is
+   #   `trace:check`, which does not take the flag: `pipeline gate G5 --builtin trace:check`
    ```
 
    From then on every gate uses `--check-baseline`. Deleting a file, losing an assertion, or losing a test case fails the gate. New test files are always allowed.

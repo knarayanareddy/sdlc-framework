@@ -6,7 +6,10 @@ Gate: **G4**. Runs in parallel with `03`.
 
 ```bash
 node pipeline/bin/pipeline.mjs phase start 04
-node pipeline/bin/pipeline.mjs gate G4 --evidence docs/04-architecture/threat-model.md,docs/04-architecture/authz-matrix.md
+node pipeline/bin/pipeline.mjs gate G4 --builtin plan
+# plan-check: every SEC-* id is modelled, every route/action the code exposes appears in the
+# authz matrix, and (from phase 06 on) every REQ-*/SEC-*/NFR-* is delivered by a slice log.
+# It fails on a plan that contradicts itself, which --evidence never could.
 node pipeline/bin/pipeline.mjs phase done 04
 ```
 
@@ -38,7 +41,12 @@ Every id in that file must appear in the threat model. The same file becomes the
 
 ## 4 · `authz-matrix.md`
 
-Role × resource × action, default deny, plus how each cell is enforced (middleware, query scoping, DB constraint). Specify **query-level** ownership scoping, not only route guards.
+Role × **route** × resource × CRUD, default deny, plus how each cell is enforced (middleware, query scoping, DB constraint). Specify **query-level** ownership scoping, not only route guards.
+
+The route column is checked mechanically: `plan-check` matches the matrix against
+`entrypoints.json` (or the spec's `| METHOD | path |` table before phase 08). A route that exists
+in the code and not in the matrix fails G4, and so does a matrix row for a route that does not
+exist. One row per route per role.
 
 ## 5 · Resource limits
 
@@ -58,6 +66,7 @@ Structured logs, a redaction list, no secrets/tokens/raw PII, and an audit log f
 
 ## GATE G4 (fresh reviewer)
 
+- [ ] `gate G4 --builtin plan` passes (threat ids modelled, routes covered)
 - [ ] Every entry point from `entrypoints.json` has ≥1 abuse case
 - [ ] Every threat maps to a SEC id and a planned test file
 - [ ] The authz matrix has no blank cells
