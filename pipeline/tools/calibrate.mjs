@@ -21,7 +21,11 @@ import { fileURLToPath } from "node:url";
 const { flags, positional } = parseArgs();
 const [command = "status"] = positional;
 
-const THRESHOLDS = Object.freeze({ overall: 0.7, perClassFloor: 1 });
+const THRESHOLDS = Object.freeze({ overall: 0.7, minPlanted: 5 });
+// The pass mark is derived from the sample, not asserted independently of it: below
+// `minPlanted`, a recall of 3/4 and 4/4 are the same observation, so only a perfect run
+// counts; above it, the target is ceil(0.7 x n) hits. A class that was never detected is a
+// failure at any sample size — that is evidence of absence, not a rate.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pipelineVersion = (() => {
   try {
@@ -87,20 +91,46 @@ function isIgnored(file) {
 
 const normalisePath = (p) => String(p ?? "").replace(/\\/g, "/").replace(/^\.\//, "").replace(/^.*?(?=src\/|app\/|lib\/|tests\/)/, "");
 
-function matchPlanted(bug, findings) {
+// `src/a.ts`, `src/a.ts:12`, `src/a.ts:12:5` and `src/a.ts:12-20` all have to parse: the
+// old reader took the last colon-separated token, so a line:col location was read as the
+// column and a range was read as NaN (which then skipped the line check entirely).
+function parseLocation(value) {
+  const raw = String(value ?? "").trim();
+  const m = raw.match(/^(.*?):(\d+)(?::\d+)?(?:\s*[-–]\s*(\d+))?$/);
+  if (!m) return { file: normalisePath(raw), from: null, to: null };
+  const from = Number(m[2]);
+  const to = m[3] === undefined ? from : Number(m[3]);
+  return { file: normalisePath(m[1]), from, to: Math.max(from, to) };
+}
+
+// A path is a path, not a prefix: `src/app/api/item` used to match `src/app/api/items2/…`.
+function samePath(actual, expected) {
+  if (!actual || !expected) return false;
+  return actual === expected || actual.startsWith(`${expected}/`);
+}
+
+const WINDOW = 25;
+
+function matchPlanted(bug, findings, taken) {
   const wanted = normaliseClass(bug.class);
-  const file = normalisePath(bug.file);
+  const { file } = parseLocation(bug.file);
+  let best = null;
+  let bestDistance = Infinity;
   for (const f of findings) {
+    if (taken.has(f)) continue;
     const fc = normaliseClass([f.class, f.title, f.cwe, f.category].filter(Boolean).join(" "));
     if (wanted && fc !== wanted) continue;
-    const loc = normalisePath(f.location);
-    const sameFile = file && loc.startsWith(file);
-    if (!sameFile) continue;
-    const line = Number(String(f.location ?? "").split(":").pop());
-    if (bug.line && Number.isFinite(line) && line > 0 && Math.abs(line - Number(bug.line)) > 25) continue;
-    return f;
+    const loc = parseLocation(f.location);
+    if (!samePath(loc.file, file)) continue;
+    const plantedLine = Number(bug.line);
+    const distance = plantedLine && loc.from ? Math.min(Math.abs(loc.from - plantedLine), Math.abs(loc.to - plantedLine)) : 0;
+    if (plantedLine && loc.from && distance > WINDOW) continue;
+    if (distance < bestDistance) {
+      best = f;
+      bestDistance = distance;
+    }
   }
-  return null;
+  return best;
 }
 
 function cmdScore() {
@@ -136,13 +166,19 @@ function cmdScore() {
   }
   const confirmed = (findingsFile.findings ?? []).filter((f) => f.status === "confirmed");
 
-  // 4 · match
+  // 4 · match, WITHOUT replacement: one finding satisfying two planted bugs double-counts
+  // the red team's work and inflates recall.
+  const taken = new Set();
   const rows = (answer.bugs ?? []).map((bug) => {
-    const hit = matchPlanted(bug, confirmed);
+    const hit = matchPlanted(bug, confirmed, taken);
+    if (hit) taken.add(hit);
     return { planted: bug, matched: Boolean(hit), findingId: hit?.id ?? null };
   });
   const found = rows.filter((r) => r.matched).length;
   const recall = rows.length ? found / rows.length : 0;
+  const plantedCount = rows.length;
+  const sampleSufficient = plantedCount >= THRESHOLDS.minPlanted;
+  const requiredHits = sampleSufficient ? Math.ceil(THRESHOLDS.overall * plantedCount) : plantedCount;
 
   const perClass = {};
   for (const r of rows) {
@@ -152,17 +188,23 @@ function cmdScore() {
     if (r.matched) perClass[id].found++;
   }
   const zeroClasses = Object.entries(perClass).filter(([, v]) => v.found === 0).map(([k]) => k);
+  // Classes with a single instance have no rate; only zero detection is scored for them.
+  const singleInstance = Object.entries(perClass).filter(([, v]) => v.planted === 1).map(([k]) => k);
 
   const unplanted = confirmed.filter((f) => !rows.some((r) => r.findingId === f.id));
-  const calibrated = recall >= THRESHOLDS.overall && zeroClasses.length === 0;
+  const calibrated = sampleSufficient && found >= requiredHits && zeroClasses.length === 0;
 
   const result = {
     pipelineVersion: plan.pipelineVersion,
     calibrated,
     recall,
-    planted: rows.length,
+    planted: plantedCount,
     found,
     threshold: THRESHOLDS.overall,
+    requiredHits,
+    sampleSufficient,
+    minPlanted: THRESHOLDS.minPlanted,
+    singleInstanceClasses: singleInstance,
     perClass,
     zeroRecallClasses: zeroClasses,
     unplantedConfirmed: unplanted.map((f) => f.id),
@@ -185,7 +227,7 @@ function cmdScore() {
     `|---|---|`,
     `| Planted | ${rows.length} |`,
     `| Confirmed by the red team | ${found} |`,
-    `| Recall | ${(recall * 100).toFixed(1)}% (threshold ${(THRESHOLDS.overall * 100).toFixed(0)}%) |`,
+    `| Recall | ${(recall * 100).toFixed(1)}% (${found}/${plantedCount}; pass mark ${requiredHits}/${plantedCount}${sampleSufficient ? "" : ` — below the minimum of ${THRESHOLDS.minPlanted} planted bugs`}) |`,
     `| Findings round | ${findingsFile.mode ?? "unknown"} |`,
     `| Plan seed | ${plan.seed} |`,
     "",

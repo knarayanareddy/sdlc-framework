@@ -515,3 +515,66 @@ should come back `insufficient`, but nothing forces that. Both belong to the liv
 Still open: **P3** — `--allow-uncovered` is still hardcoded into `trace:check`, which is the same
 class of defect as P1's (the gate can be satisfied by a tag that covers nothing), plus
 `validate-findings` evidence tiers, and `calibrate.mjs` threshold derivation.
+
+## 14 · P3 landed — traceability and evidence tiers (2026-11-26)
+
+Version `2.4.0 → 2.5.0`. Reproduced first, at `799786c`.
+
+**F-03 — the coverage gate was run with an exemption from coverage.** `trace:check` is the builtin
+that claims every requirement has a test. The pipeline ran it as:
+
+```
+node trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered --check-baseline …
+```
+
+so on the framework's own example — five requirements, two with no test anywhere — this happened:
+
+```
+G7 PASSED in 0.0s (exit 0, recorded in docs/gate-ledger.jsonl)
+```
+
+The gate could not fail. `uncovered` was computed, printed, and then ignored. Three changes:
+
+1. **The builtin no longer passes the flag.** `trace:check` runs
+   `trace-check-v2.mjs <spec> <tests> --check-baseline <baseline>`; only `trace:structure` (phase 02,
+   before tests exist) and `trace:freeze` (which writes the baseline) may run structurally.
+   The default tripwire `trace` check lost it too, for the same reason: a slice tripwire runs after
+   the spec is frozen.
+2. **A structure run says what it is.** `--allow-uncovered` prints
+   `RESULT: PASS (structure only; not a coverage claim)`, emits `structureOnly: true` in `--json`, and
+   warns on stdout. The prompts and `pipeline README` now state that it belongs to spec freeze alone.
+3. **A spec cannot name a test that does not test it.** For every requirement with
+   `- Test file: <path>`, that file must exist **and** carry `@req <id>`. A missing file, or a file
+   that tests a different requirement, is now a failure — previously the declaration was never read.
+
+**The example is honest now, which is what made the fix shippable.** Rather than keep an exemption
+for the two untested requirements, the mini-app gained real implementations and real tests:
+`src/lib/reads.mjs` (`markRead`, `readState`, `buildList`) with three REQ-003 unit tests covering the
+double-submit acceptance case, and `tests/perf/list.test.mjs` for NFR-001 — p95 of building the
+10,000-item list response, 60 samples, 300 ms budget, worst-realistic read set. `trace:check` on the
+example goes from *3/5 covered, FAIL if the flag is removed* to **5/5 covered, PASS**. The perf test
+measures the pure response builder; the 50 rps half of NFR-001 still needs the load rig, and the
+test says so in its header rather than implying otherwise.
+
+| # | Before | Now |
+|---|---|---|
+| T1 (F-09) | `validate-findings` searched the whole test file for `/\bexpect\s*\(/`, so `// expect(x).toBe(y)` and a commented-out assertion satisfied the tier; an assertion above the `@finding` tag counted for it | comments are stripped and the assertion must appear **after** the tag: a commented-out or earlier `expect` is *"no assertion after the @finding F-01 tag"* |
+| T2 (F-15) | `failureRate` had to merely exist; `0`, `3` and `"high"` all passed | must be a number in `(0, 1]`: a rate of 0 means the attack never worked, which is not a confirmed finding |
+| T3 (F-19) | `verifiers: ["claude-opus", "claude-sonnet-4"]` counted as "two independent verifiers" | families are resolved and must be ≥ 2 **and** known; an unresolvable verifier is named as such |
+| F-07 | every `mode: "DIFF"` findings file failed outright, which pushed people to label a scan of changed files `FULL` | DIFF is supplementary and passes, unless it claims clean (`result`/`clean`/`claimsClean`) — the claim is checked, not the label |
+| M-02 | `calibrate` matched findings to planted bugs **with replacement**, so one finding could satisfy several plants and inflate recall | greedy one-to-one matching; a single finding now scores 1 of 2, not 2 of 2 |
+| M-02 | `location.split(":").pop()` read `file:12:5` as line 5 (the column) and `file:12-20` as `NaN`, which silently skipped the line window | `file:line`, `file:line:col` and `file:from-to` all parse; the window compares against the range |
+| M-03 | `loc.startsWith(file)` matched `src/app/api/item` against `src/app/api/items/route.ts` | whole-path comparison (`===` or `file + "/"`) |
+| — | recall was judged against a hardcoded `0.7` regardless of sample size, and 3/3 planted bugs was "calibrated" | the pass mark is derived from the sample: below 5 planted bugs nothing is calibrated (`sampleSufficient: false`), above it the mark is `ceil(0.7 × n)`; a class with zero detections still fails at any size, and single-instance classes are labelled as having no rate |
+
+**Verified.** `run-selftests.mjs` → 18 files + trace selftest, 2/2 groups; `node --test
+pipeline/tools/*.test.mjs` → **179 tests, 0 failing** (was 165); `trace-check.test.mjs` is new (6
+tests, including one that reads the ledger entry `pipeline gate` wrote and asserts the command carries
+no `--allow-uncovered`); `demo.mjs` → PASS 00→12, whose G5 runs
+`trace:freeze,trace:check,unit` against the now fully-covered example.
+
+**Still open (the rest of §7's P3 that I did not take).** `trace-check-v2` counts coverage per
+**file**: one real assertion in a file tagged `@req REQ-001 REQ-002` covers both, so a requirement can
+ride on another's test — per-`test()` tags would close that and change the spec language. Byte
+thresholds for glob matches were not in this pass. And `trace:structure`/`trace:freeze` still take the
+flag, which remains the only place a "green" means structure rather than coverage — it says so now.

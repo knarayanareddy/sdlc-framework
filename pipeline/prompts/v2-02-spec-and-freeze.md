@@ -49,7 +49,7 @@ A spec that drifts silently is a spec nobody is held to.
 
 ## GATE G2
 
-- [ ] `node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered` exits 0 (structure only)
+- [ ] `node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered` exits 0 and says `PASS (structure only; not a coverage claim)` — tests do not exist yet at freeze, so this is the only phase where the flag is legitimate.
 - [ ] A **fresh-context reviewer** tries to write a test for every requirement. Any requirement it cannot test is rewritten.
 - [ ] Reviewer lists contradictions between requirements, the info-flow table and the data model. Count must be 0.
 - [ ] A P0 requirement exists for every thesis claim.

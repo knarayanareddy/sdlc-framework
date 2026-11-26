@@ -4,7 +4,7 @@
 
 A comprehensive prompt and verification framework designed for LLMs, autonomous coding agents, and engineers.
 
-**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Twenty zero-dependency tools, seventeen of them self-tested, plus a worked example that walks every phase.
+**v1 is a manual. v2 is an executable pipeline**: an orchestrator that runs each gate itself, records the exit code in a hash-chained ledger, and refuses to advance a phase whose prerequisites are missing. Twenty zero-dependency tools, eighteen of them self-tested, plus a worked example that walks every phase.
 
 Three things worth knowing before you trust a green run:
 
@@ -65,7 +65,7 @@ result, not an opinion.
 
 - **`pipeline/`** — the framework and the v2 tooling
   - **`bin/pipeline.mjs`**: the orchestrator CLI — state machine, gate runner, hash-chained ledger, report
-  - **`tools/`**: twenty zero-dependency tools, seventeen with a `*.test.mjs` beside them:
+  - **`tools/`**: twenty zero-dependency tools, eighteen with a `*.test.mjs` beside them:
     `trace-check-v2`, `gate-ledger`, `entrypoints`, `coverage-gate`, `quote-verify`,
     `validate-findings`, `validate-progress`, `protected-paths`, `tripwire`, `estimate`,
     `sandbox`, `dast`, `fuzz-api`, `verifier-route`, `independence`, `calibrate`, `families`,

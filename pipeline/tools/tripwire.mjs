@@ -20,7 +20,9 @@ const DEFAULT_CHECKS = [
   { name: "types", cmd: "npx tsc --noEmit" },
   { name: "lint", cmd: "npx eslint ." },
   { name: "build", cmd: "npm run build" },
-  { name: "trace", cmd: "node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests --allow-uncovered" },
+  // No --allow-uncovered: a slice tripwire runs after the spec is frozen, so an untested
+  // requirement is exactly what it is meant to catch.
+  { name: "trace", cmd: "node pipeline/tools/trace-check-v2.mjs docs/02-spec/SPEC.md tests" },
   { name: "sast", cmd: "semgrep --config p/owasp-top-ten --config p/typescript --error", optional: true },
   { name: "secrets", cmd: "gitleaks detect --no-banner", optional: true },
   { name: "deps", cmd: "osv-scanner --lockfile package-lock.json", optional: true },

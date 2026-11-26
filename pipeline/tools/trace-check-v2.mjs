@@ -7,12 +7,18 @@
 //   3. skip / todo / fixme / fails / xit / xfail in a tagged file is an ERROR.
 //   4. Tautologies (expect(true).toBe(true)) do not count as assertions.
 //   5. Zero requirements prints why it failed.
-//   6. --baseline / --check-baseline: test files become append-only after phase 05.
+//   6. `Test file:` in the spec must point at a file that exists and carries the tag, so a
+//      spec cannot claim a test that does not test it.
+//   7. --baseline / --check-baseline: test files become append-only after phase 05.
 //      Baseline records assertions, skips AND test cases, so deleting a case while
 //      keeping an assertion elsewhere is caught too.
 //
 // Usage:
 //   node trace-check-v2.mjs <spec> <testsDir> [--allow-uncovered] [--json]
+//
+// --allow-uncovered marks a STRUCTURE run (spec freeze, phase 02): requirements exist and no
+// tests do yet. It is never the right flag for a coverage claim, so `trace:check` does not
+// pass it; the run says so on stdout and in --json, and a direct invocation prints a warning.
 //   node trace-check-v2.mjs <spec> <testsDir> --baseline <file.json>
 //   node trace-check-v2.mjs <spec> <testsDir> --check-baseline <file.json>
 import fs from "node:fs";
@@ -125,6 +131,25 @@ for (const f of files) {
   if (f.skips === 0) for (const id of f.tags) covered.set(id, [...(covered.get(id) ?? []), f.file]);
 }
 
+// A requirement may name the file that is supposed to test it. If it does, the file must
+// exist and must carry the tag: otherwise the spec's own trace claim is false, whatever the
+// rest of the suite covers.
+if (!allowUncovered) {
+  for (const r of reqs) {
+    const declared = (r.block.match(/^[ \t]*[-*][ \t]*Test file:[ \t]*(\S+)/m) ?? [])[1];
+    if (!declared) continue;
+    const abs = path.resolve(process.cwd(), declared);
+    if (!fs.existsSync(abs)) {
+      problems.push(`${r.id}: Test file ${declared} does not exist`);
+      continue;
+    }
+    // Not conditional on coverage: if the spec says this file tests REQ-x, the file must say
+    // so too. A requirement traced by some other file leaves the declaration false.
+    const tags = [...fs.readFileSync(abs, "utf8").matchAll(TAG_LINE)].flatMap((m) => m[1].match(/(?:REQ|SEC|NFR)-\d+/g) ?? []);
+    if (!tags.includes(r.id)) problems.push(`${r.id}: declared Test file ${declared} does not carry the @req ${r.id} tag`);
+  }
+}
+
 const uncovered = reqs.filter((r) => !covered.has(r.id)).map((r) => r.id);
 
 if (writeBaseline) {
@@ -157,16 +182,27 @@ const fail = problems.length > 0 || (!allowUncovered && uncovered.length > 0);
 if (asJson) {
   console.log(
     JSON.stringify(
-      { requirements: reqs.length, covered: reqs.length - uncovered.length, uncovered, files: files.length, problems, result: fail ? "FAIL" : "PASS" },
+      {
+        requirements: reqs.length,
+        covered: reqs.length - uncovered.length,
+        uncovered,
+        files: files.length,
+        structureOnly: allowUncovered,
+        problems,
+        result: fail ? "FAIL" : allowUncovered ? "PASS (structure only)" : "PASS",
+      },
       null,
       2,
     ),
   );
 } else {
+  if (allowUncovered) {
+    console.log("WARNING: --allow-uncovered is a structure run; uncovered requirements are not a pass for coverage");
+  }
   console.log(`requirements: ${reqs.length}  covered: ${reqs.length - uncovered.length}  uncovered: ${uncovered.length}  test files: ${files.length}`);
   if (uncovered.length) console.log(`uncovered: ${uncovered.join(", ")}`);
   for (const p of problems) console.log(`PROBLEM ${p}`);
-  console.log(fail ? "RESULT: FAIL" : "RESULT: PASS");
+  console.log(fail ? "RESULT: FAIL" : allowUncovered ? "RESULT: PASS (structure only; not a coverage claim)" : "RESULT: PASS");
 }
 
 process.exit(fail ? 1 : 0);

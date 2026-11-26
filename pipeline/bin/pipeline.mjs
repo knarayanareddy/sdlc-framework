@@ -45,7 +45,7 @@ const projectRoot = path.resolve(flags.cwd ?? process.cwd());
 
 const DEFAULTS = {
   configPath: "pipeline.config.json",
-  pipelineVersion: "2.4.0",
+  pipelineVersion: "2.5.0",
   spec: "docs/02-spec/SPEC.md",
   specHash: "docs/02-spec/SPEC.sha256",
   tests: "tests",
@@ -154,7 +154,11 @@ function builtin(name) {
     case "trace:freeze":
       return `node ${tool("trace-check-v2.mjs")} ${c.spec} ${c.tests} --allow-uncovered --baseline ${c.baseline}`;
     case "trace:check":
-      return `node ${tool("trace-check-v2.mjs")} ${c.spec} ${c.tests} --allow-uncovered --check-baseline ${c.baseline}`;
+      // No --allow-uncovered here: `trace:check` is the gate that claims requirements are
+      // tested. It was passing with 2 of 5 requirements untested (REVIEW-OF-SECOND-OPINION.md
+      // §14, F-03). Only trace:structure (pre-test) and trace:freeze (which writes the
+      // baseline) may run structurally.
+      return `node ${tool("trace-check-v2.mjs")} ${c.spec} ${c.tests} --check-baseline ${c.baseline}`;
     case "quotes":
       return `node ${tool("quote-verify.mjs")} --extracts ${c.researchExtracts} --snapshots ${c.researchSnapshots} --log ${c.quoteLog} --write-ledger ${c.evidenceLedger}${c.fetchQuotes ? " --fetch" : ""}`;
     case "entrypoints":

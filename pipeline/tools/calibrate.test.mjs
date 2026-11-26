@@ -196,3 +196,72 @@ test("status reports absent, calibrated and stale honestly", () => {
   assert.equal(stale.status, 3);
   assert.match(stale.stdout, /stale/);
 });
+
+// ---- P3 · the recall number must not be obtainable by accident ------------------------
+function writeJson(d, name, value) {
+  fs.writeFileSync(path.join(d, name), JSON.stringify(value, null, 2));
+}
+const writable = (d, name) => path.join(d, name);
+
+test("one finding cannot satisfy two planted bugs (no matching with replacement)", () => {
+  const d = tmp();
+  const plan = makePlan(d, { n: 2 });
+  // Two planted bugs of one class in one file, ten lines apart; the red team reported one.
+  const bugs = plan.classes.map((c, i) => ({ id: `P${i + 1}`, class: c.id, file: "src/app/api/items/route.ts", line: 10 + i * 10, description: c.plant }));
+  writeJson(d, "answer.json", { pipelineVersion: plan.pipelineVersion, plantedBy: "p", branch: "calibration/x", bugs });
+  writeJson(d, "findings.json", {
+    run: "cal", mode: "FULL",
+    findings: [{ id: "F-1", title: bugs[0].class, class: bugs[0].class, severity: "high", status: "confirmed", location: `${bugs[0].file}:${bugs[0].line}` }],
+  });
+  const r = score(d);
+  const json = JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8"));
+  assert.equal(json.found, 1, "one finding was counted twice");
+  assert.equal(json.recall, 0.5);
+  assert.equal(r.status, 1);
+});
+
+test("line:col and line ranges in a location are parsed, not misread", () => {
+  const d = tmp();
+  const plan = makePlan(d, { n: 2, seed: 3 });
+  const bugs = plan.classes.map((c, i) => ({ id: `P${i + 1}`, class: c.id, file: "src/app/api/items/route.ts", line: i === 0 ? 42 : 77, description: c.plant }));
+  writeJson(d, "answer.json", { pipelineVersion: plan.pipelineVersion, plantedBy: "p", branch: "calibration/x", bugs });
+  // :col for the first, a range for the second. The old reader saw 7 and NaN.
+  writeJson(d, "findings.json", {
+    run: "cal", mode: "FULL",
+    findings: [
+      { id: "F-1", title: bugs[0].class, class: bugs[0].class, severity: "high", status: "confirmed", location: "src/app/api/items/route.ts:42:7" },
+      { id: "F-2", title: bugs[1].class, class: bugs[1].class, severity: "high", status: "confirmed", location: "src/app/api/items/route.ts:75-80" },
+    ],
+  });
+  const json = (score(d), JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8")));
+  assert.equal(json.found, 2, "a line:col or a range location was not matched");
+});
+
+test("a path is matched whole, not as a prefix", () => {
+  const d = tmp();
+  const plan = makePlan(d, { n: 2, seed: 5 });
+  const bugs = plan.classes.map((c, i) => ({ id: `P${i + 1}`, class: c.id, file: i === 0 ? "src/app/api/item" : "src/app/api/items/route.ts", line: 10, description: c.plant }));
+  writeJson(d, "answer.json", { pipelineVersion: plan.pipelineVersion, plantedBy: "p", branch: "calibration/x", bugs });
+  writeJson(d, "findings.json", {
+    run: "cal", mode: "FULL",
+    findings: [0, 1].map((i) => ({ id: `F-${i + 1}`, title: bugs[i].class, class: bugs[i].class, severity: "high", status: "confirmed", location: "src/app/api/items/route.ts:10" })),
+  });
+  const json = (score(d), JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8")));
+  // Only the bug planted in that exact file may match; "src/app/api/item" is a different path.
+  assert.equal(json.found, 1, "src/app/api/item was matched against src/app/api/items/route.ts");
+});
+
+test("a sample smaller than the minimum cannot be calibrated", () => {
+  const d = tmp();
+  const plan = makePlan(d, { n: 3 });
+  const bugs = makeAnswer(d, plan);
+  makeFindings(d, bugs); // every planted bug found
+  const r = score(d);
+  const json = JSON.parse(fs.readFileSync(path.join(d, "calibration.json"), "utf8"));
+  assert.equal(json.recall, 1);
+  assert.equal(json.sampleSufficient, false);
+  assert.equal(json.calibrated, false, "3/3 is an anecdote, not a calibration");
+  assert.equal(r.status, 1);
+  const report = fs.readFileSync(path.join(d, "report.md"), "utf8");
+  assert.match(report, /below the minimum of 5/);
+});

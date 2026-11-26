@@ -73,7 +73,7 @@ test("T3 needs two verifiers and at least three controls checked", () => {
 
   const good = validate({
     mode: "FULL",
-    findings: [finding({ evidenceTier: "T3", severity: "medium", controlsChecked: ["middleware", "schema validation", "db constraint"], verifiers: ["model-a", "model-b"] })],
+    findings: [finding({ evidenceTier: "T3", severity: "medium", controlsChecked: ["middleware", "schema validation", "db constraint"], verifiers: ["gpt-5", "claude-opus"] })],
   });
   assert.equal(good.status, 0, good.out.problems.join("\n"));
 });
@@ -81,7 +81,7 @@ test("T3 needs two verifiers and at least three controls checked", () => {
 test("T3 caps severity at medium unless reproduced", () => {
   const { status, out } = validate({
     mode: "FULL",
-    findings: [finding({ evidenceTier: "T3", severity: "high", controlsChecked: ["a", "b", "c"], verifiers: ["x", "y"] })],
+    findings: [finding({ evidenceTier: "T3", severity: "high", controlsChecked: ["a", "b", "c"], verifiers: ["gpt-5", "gemini-2.5-pro"] })],
   });
   assert.equal(status, 1);
   assert.match(out.problems.join("\n"), /T3 caps severity/);
@@ -99,10 +99,16 @@ test("needs_validation must name one missing fact and the command to settle it",
   assert.match(out.problems.join("\n"), /must name the single missing fact/);
 });
 
-test("a DIFF run can never be reported as clean", () => {
-  const { status, out } = validate({ mode: "DIFF", findings: [] });
-  assert.equal(status, 1);
-  assert.match(out.problems.join("\n"), /DIFF run cannot be used to claim the codebase is clean/);
+test("a DIFF run is supplementary: fine as evidence, fatal if it claims clean", () => {
+  // It used to fail on sight, which pushed people to label a scan of the changed files as
+  // FULL. The rule that matters is the claim, not the mode.
+  const ok = validate({ mode: "DIFF", findings: [] });
+  assert.equal(ok.status, 0, ok.out.problems.join("\n"));
+  assert.equal(ok.out.supplementary, true);
+
+  const liar = validate({ mode: "DIFF", findings: [], result: "clean" });
+  assert.equal(liar.status, 1);
+  assert.match(liar.out.problems.join("\n"), /cannot claim the codebase is clean/);
 });
 
 test("unknown/duplicate ids and bad severity are caught", () => {
@@ -112,4 +118,53 @@ test("unknown/duplicate ids and bad severity are caught", () => {
   });
   assert.equal(status, 1);
   assert.match(out.problems.join("\n"), /duplicate id/);
+});
+
+// ---- P3 · the evidence tiers must not be satisfiable by prose --------------------------
+test("a commented-out assertion is not an assertion (T1)", () => {
+  // This passed before: the T1 rule searched the whole file for /expect\(/.
+  const { status, out } = validate(
+    { mode: "FULL", findings: [finding()] },
+    { withTest: `// @finding F-01\nit("x", () => {});\n// expect(res.status).toBe(404);\n/* assert.equal(a, b) */\n` },
+  );
+  assert.equal(status, 1);
+  assert.match(out.problems.join("\n"), /no assertion after the @finding F-01 tag/);
+});
+
+test("an assertion before the tag does not count for this finding (T1)", () => {
+  const { status, out } = validate(
+    { mode: "FULL", findings: [finding()] },
+    { withTest: `import { expect } from "vitest";\nexpect(1).toBe(1);\n// @finding F-01\nit("x", () => {});\n` },
+  );
+  assert.equal(status, 1);
+  assert.match(out.problems.join("\n"), /no assertion after the @finding F-01 tag/);
+});
+
+test("a T2 rate of 0 or above 1 is not a confirmed finding", () => {
+  const zero = validate({ mode: "FULL", findings: [finding({ evidenceTier: "T2", iterations: 50, failureRate: 0 })] });
+  assert.equal(zero.status, 1);
+  assert.match(zero.out.problems.join("\n"), /failureRate must be a number in \(0, 1\]/);
+
+  const absurd = validate({ mode: "FULL", findings: [finding({ evidenceTier: "T2", iterations: 50, failureRate: 3 })] });
+  assert.equal(absurd.status, 1);
+  assert.match(absurd.out.problems.join("\n"), /failureRate must be a number in \(0, 1\]/);
+
+  const text = validate({ mode: "FULL", findings: [finding({ evidenceTier: "T2", iterations: 50, failureRate: "high" })] });
+  assert.equal(text.status, 1);
+});
+
+test("two spellings of one model are not two independent verifiers (T3)", () => {
+  const same = validate({
+    mode: "FULL",
+    findings: [finding({ evidenceTier: "T3", severity: "medium", controlsChecked: ["a", "b", "c"], verifiers: ["claude-opus", "claude-sonnet-4"] })],
+  });
+  assert.equal(same.status, 1);
+  assert.match(same.out.problems.join("\n"), />= 2 distinct families/);
+
+  const unknown = validate({
+    mode: "FULL",
+    findings: [finding({ evidenceTier: "T3", severity: "medium", controlsChecked: ["a", "b", "c"], verifiers: ["model-a", "model-b"] })],
+  });
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.out.problems.join("\n"), /no known family/);
 });
