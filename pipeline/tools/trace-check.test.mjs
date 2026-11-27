@@ -40,7 +40,12 @@ function project({ spec = [SPEC_REQ("REQ-001"), SPEC_REQ("REQ-002")].join("\n# S
   return dir;
 }
 
-const GOOD_TEST = (ids) => `// @req ${ids.join(" ")}\nimport { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("x", () => { assert.equal(1, 1); });\n`;
+// One asserting case per tagged requirement: coverage is per case since 2.9.1 (B-30), so a
+// single case tagged with two ids is a bypass, not a fixture.
+const GOOD_TEST = (ids) =>
+  `// @req ${ids.join(" ")}\nimport { test } from "node:test";\nimport assert from "node:assert/strict";\n${ids
+    .map((id) => `test("${id}: x", () => { assert.equal(1, 1); });`)
+    .join("\n")}\n`;
 const run = (dir, args) => spawnSync("node", [TRACE, ...args], { encoding: "utf8", cwd: dir });
 
 test("a structure run is labelled as one and is not a coverage claim", () => {
