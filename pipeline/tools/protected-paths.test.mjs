@@ -134,3 +134,52 @@ test("the rules are read from the base commit, so editing the config does not di
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// B-34: at release the orchestrator-owned files are judged, not waved through.
+const CLI = fileURLToPath(new URL("../bin/pipeline.mjs", import.meta.url));
+const cliRun = (dir, args) => spawnSync("node", [CLI, ...args, "--cwd", dir], { cwd: dir, encoding: "utf8" });
+
+// A project `pipeline init` has actually set up: base commit, genesis, one recorded gate.
+function initialised(label = "strict") {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pp-${label}-`));
+  fs.mkdirSync(path.join(dir, "docs/02-spec"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs/02-spec/SPEC.md"), "# SPEC\n");
+  fs.writeFileSync(path.join(dir, "README.md"), "# x\n");
+  git(dir, "init", "-q");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "base");
+  const init = cliRun(dir, ["init"]);
+  assert.equal(init.status, 0, init.stdout + init.stderr);
+  const gate = cliRun(dir, ["gate", "G0", "--builtin", "ledger"]);
+  assert.equal(gate.status, 0, gate.stdout + gate.stderr);
+  return dir;
+}
+
+test("--strict verifies the ledger instead of warning about it", () => {
+  const dir = initialised();
+
+  const lenient = check(dir);
+  assert.equal(lenient.status, 0, lenient.stdout + lenient.stderr);
+
+  const strict = check(dir, "--strict");
+  assert.equal(strict.status, 0, strict.stdout + strict.stderr);
+  assert.match(strict.stdout, /orchestrator-owned .*the ledger verifies/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("--strict fails when a gate was written into progress.json by hand", () => {
+  const dir = initialised("forged");
+  const file = path.join(dir, "docs/progress.json");
+  const progress = JSON.parse(fs.readFileSync(file, "utf8"));
+  progress.gates.G7 = { status: "passed", command: "true", commandSource: "manual" };
+  fs.writeFileSync(file, JSON.stringify(progress, null, 1));
+
+  // Without --strict the same tree is a warning, which is exactly the hole.
+  const lenient = check(dir);
+  assert.equal(lenient.status, 0, lenient.stdout);
+
+  const strict = check(dir, "--strict");
+  assert.equal(strict.status, 1, strict.stdout + strict.stderr);
+  assert.match(strict.stdout, /G7 is recorded in progress\.json but has no ledger entry/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

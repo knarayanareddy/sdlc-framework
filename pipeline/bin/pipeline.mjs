@@ -183,6 +183,10 @@ function builtin(name) {
       return `node ${tool("gate-ledger.mjs")} verify --path ${c.ledger} --progress ${c.progress}`;
     case "protected":
       return `node ${tool("protected-paths.mjs")} --config ${c.configPath}`;
+    case "protected:strict":
+      // At release the orchestrator-owned files are checked against the ledger, not waved
+      // through as warnings (B-34).
+      return `node ${tool("protected-paths.mjs")} --config ${c.configPath} --strict --ledger ${c.ledger}`;
     case "tripwire":
       return `node ${tool("tripwire.mjs")} --config ${c.configPath}`;
     case "selftests":
@@ -230,7 +234,7 @@ const BUILTINS = [
   "types", "lint", "unit", "build", "e2e", "a11y", "mutation", "sast", "secrets", "deps", "dast",
   "trace:structure", "trace:freeze", "trace:check", "quotes", "entrypoints", "coverage", "findings",
   "progress", "ledger", "protected", "tripwire", "selftests",
-  "digest", "metrics", "release", "slices", "plan", "plan:slices", "manual",
+  "digest", "metrics", "release", "slices", "plan", "plan:slices", "protected:strict",
   "independence", "fuzz", "sandbox", "calibrate",
 ];
 
@@ -689,7 +693,15 @@ switch (command) {
     // The commit everything is diffed against. Without it, a builder can `git commit` its
     // edits and protected-paths sees a clean tree (REVIEW-OF-SECOND-OPINION.md, F-14).
     const baseCommit = commitSha();
-    writeProgress({ ...readProgress(), schemaVersion: 2, pipelineVersion: cfg.pipelineVersion, phase: "00", baseCommit, gates: {}, phases: {}, blockers: [], rounds: { full: 0, diff: 0 }, notVerified: [], createdAt: new Date().toISOString() });
+    // Files `init` writes after the base commit live inside frozen areas, so a diff against the
+    // base commit calls them "new file in a frozen area" the moment a project starts. Record the
+    // digest of what init wrote: protected-paths accepts a bootstrap file only while it still
+    // matches, so an edit after init is still a violation (B-34).
+    const bootstrap = {};
+    for (const rel of [cfg.configPath, ALLOWLIST]) {
+      if (fs.existsSync(abs(rel))) bootstrap[rel] = sha256(fs.readFileSync(abs(rel), "utf8"));
+    }
+    writeProgress({ ...readProgress(), schemaVersion: 2, pipelineVersion: cfg.pipelineVersion, phase: "00", baseCommit, bootstrap, gates: {}, phases: {}, blockers: [], rounds: { full: 0, diff: 0 }, notVerified: [], createdAt: new Date().toISOString() });
     if (!baseCommit) warn("not a git repository: protected-paths cannot see committed edits, so it will report NOT_VERIFIED");
     else console.log(paint.dim(`base commit: ${baseCommit} (protected-paths diffs against this, not HEAD)`));
 
@@ -855,7 +867,17 @@ switch (command) {
       const names = String(flags.builtin).split(",").map((s) => s.trim()).filter(Boolean);
       for (const name of names) {
         const resolved = builtin(name);
-        if (resolved === null) continue;
+        // `manual` used to be silently dropped from the list, so `--builtin manual,unit`
+        // certified a judgement gate from `unit` alone and the intent vanished without a word
+        // (B-29). A name that resolves to nothing is now an error, and `manual` says what to do.
+        if (resolved === null) {
+          if (name === "manual") {
+            fail(
+              `"manual" is not a builtin. If ${gate} needs a human judgement, record it as a human judgement: --not-verified --reason "<what you could not run>" --human-command "<command a human runs>", or --attested-by <name> with PIPELINE_HUMAN=1. Dropping it from the list would leave the mechanical half certifying the gate.`,
+            );
+          }
+          fail(`builtin "${name}" resolves to nothing in pipeline.config.json — nothing was run for it`);
+        }
         cmds.push(resolved);
       }
       // G5: freeze the baseline before checking it, but only while the baseline is still being
@@ -1037,6 +1059,16 @@ switch (command) {
       blocked = true;
     } else {
       console.log(paint.dim(`ledger: ${ledgerCheck.count} entries, chain intact, ${Object.keys(progress.gates ?? {}).length} gate(s) cross-checked`));
+    }
+    // 3 · the protected paths, strictly: at release the orchestrator-owned files are checked
+    // against the ledger instead of being reported as warnings (B-34). Read-only, so it runs
+    // under --check too.
+    const protectedCheck = run(builtin("protected:strict"), { cwd: projectRoot, timeout: 600_000 });
+    if (protectedCheck.code !== 0) {
+      console.error(paint.red(`protected paths: ${tail(protectedCheck.stdout || protectedCheck.stderr, 6)}`));
+      blocked = true;
+    } else {
+      console.log(paint.dim("protected paths: clean (strict; orchestrator-owned files match the ledger)"));
     }
     if (blocked) process.exit(1);
 

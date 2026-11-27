@@ -20,6 +20,26 @@ const SPEC = `# Demo
 - Done-when: matrix passes.
 `;
 
+const TWO_SPEC = `# Demo
+## 8. Requirements
+
+### REQ-001 A member can add a link
+- Priority: P0
+- Statement: The system shall let a member add a link.
+- Acceptance:
+  - Given a member, When they post a link, Then it appears in the list.
+- Test level: unit
+- Done-when: the list shows the new link.
+
+### REQ-002 A member can mark a link read
+- Priority: P1
+- Statement: The system shall let a member mark a link read once.
+- Acceptance:
+  - Given a link, When the member marks it read twice, Then exactly one read row exists.
+- Test level: unit
+- Done-when: the read state survives a reload.
+`;
+
 function run(name, testSource, expectExit, extraArgs = [], spec = SPEC, mutate, expectStdout) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tcv2-"));
   fs.mkdirSync(path.join(dir, "tests"));
@@ -58,6 +78,39 @@ const results = [
   // New at 2.8.0: an assertion in a comment or a string is not a test (SECOND-OPINION-3 G-07).
   run("commented-out assertions are NOT coverage", `// @req SEC-001\nit("hollow", () => {\n  // expect(1).toBe(2);\n  // assert.equal(1, 2);\n});\n`, 1),
   run("an assertion outside any test case is NOT coverage", `// @req SEC-001\nexpect(1).toBe(2);\n`, 1),
+  // New at 2.9.1: coverage is per test case, not per file (B-30).
+  run(
+    "one asserting case cannot cover two tagged requirements",
+    `// @req REQ-001 REQ-002\nit("both", () => { expect(a()).toBe(1); });\n`,
+    1,
+    [],
+    TWO_SPEC,
+    undefined,
+    "only 1 test case(s) with an assertion",
+  ),
+  run(
+    "one asserting case per tagged requirement is fine",
+    `// @req REQ-001 REQ-002\nit("a", () => { expect(a()).toBe(1); });\nit("b", () => { expect(b()).toBe(2); });\n`,
+    0,
+    [],
+    TWO_SPEC,
+  ),
+  run(
+    "a case that names only REQ-001 does not cover REQ-002",
+    `// @req REQ-001 REQ-002\nit("REQ-001: a", () => { expect(a()).toBe(1); });\n`,
+    1,
+    [],
+    TWO_SPEC,
+    undefined,
+    "no asserting test case names it",
+  ),
+  run(
+    "both requirements named by their own cases",
+    `// @req REQ-001 REQ-002\nit("REQ-001: a", () => { expect(a()).toBe(1); });\nit("REQ-002: b", () => { expect(b()).toBe(2); });\n`,
+    0,
+    [],
+    TWO_SPEC,
+  ),
 ];
 
 const failed = results.filter((r) => !r).length;

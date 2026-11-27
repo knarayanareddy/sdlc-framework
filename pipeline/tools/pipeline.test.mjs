@@ -352,14 +352,17 @@ test("a copy of the pipeline in a directory with spaces runs", () => {
 // ---------------------------------------------------------------------------
 // 12 · An evidence gate suggests something it can actually run (F-18)
 // ---------------------------------------------------------------------------
-test("gate G3 suggests the real evidence command, not --builtin manual", () => {
+test("gate G3 suggests the real evidence command, and `manual` is refused", () => {
   const dir = project("g3");
-  const res = cli(dir, ["gate", "G3", "--builtin", "manual"]);
-  // `manual` resolves to nothing, so the gate must not run — but the hint has to be true.
-  assert.notEqual(res.status, 0);
-  assert.match(res.stdout, /is an evidence gate/);
-  assert.match(res.stdout, /gate G3 --evidence docs\/03-design\/design-brief\.md/);
-  assert.doesNotMatch(res.stdout, /Suggested: --builtin manual/);
+  const bare = cli(dir, ["gate", "G3"]);
+  assert.notEqual(bare.status, 0);
+  assert.match(bare.stdout, /is an evidence gate/);
+  assert.match(bare.stdout, /gate G3 --evidence docs\/03-design\/design-brief\.md/);
+  assert.doesNotMatch(bare.stdout, /Suggested: --builtin manual/);
+  // Since 2.9.1 `manual` is an error rather than a name that resolves to nothing (B-29).
+  const manual = cli(dir, ["gate", "G3", "--builtin", "manual"]);
+  assert.notEqual(manual.status, 0);
+  assert.match(manual.stderr, /"manual" is not a builtin/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -721,5 +724,14 @@ test("verify --check does not re-run a command that writes files", () => {
   const plain = cli(dir, ["verify"]);
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
   assert.notEqual(fs.readFileSync(metricsFile, "utf8"), '{"hand":"edited"}', "the plain verify re-ran the command");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("`manual` in a --builtin list is an error, not a silent omission (B-29)", () => {
+  const dir = project("builtin-manual");
+  const r = cli(dir, ["gate", "G7", "--builtin", "manual,progress"]);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /"manual" is not a builtin/);
+  assert.equal(progressOf(dir).gates.G7, undefined, "the gate was certified by the half that ran");
   fs.rmSync(dir, { recursive: true, force: true });
 });

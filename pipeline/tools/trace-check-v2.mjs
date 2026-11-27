@@ -180,6 +180,50 @@ function assertionsInCases(code) {
   }
   return total;
 }
+// Coverage is per test case, not per file: one asserting case in a file tagged
+// `@req REQ-001 REQ-002` used to cover both requirements (B-30). A case counts for the ids it
+// names itself -- in its title, or in an `@req` comment inside it -- and the file-level tag is
+// then only a declaration. Files that name nothing per case keep the tag, but need one
+// asserting case per tagged requirement.
+function casesInFileSeveral(text) {
+  const code = stripNonCode(text);
+  const call = /\b(it|test)(?:\.\w+)*\s*\(/g;
+  const out = [];
+  let m;
+  while ((m = call.exec(code))) {
+    // strings are blanked in `code`, so the quote offsets are read from `text`
+    let i = m.index + m[0].length;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    let title = "";
+    const quote = text[i];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      i++;
+      while (i < text.length && text[i] !== quote) {
+        if (text[i] === "\\") { title += text[i + 1] ?? ""; i += 2; continue; }
+        title += text[i++];
+      }
+      i++;
+    }
+    let brace = text.indexOf("{", m.index + m[0].length);
+    if (brace === -1) { out.push({ title, asserts: 0, tags: [] }); continue; }
+    let depth = 0;
+    let j = brace;
+    for (; j < text.length; j++) {
+      if (text[j] === "{") depth++;
+      else if (text[j] === "}") { depth--; if (depth === 0) break; }
+    }
+    const body = text.slice(brace + 1, j);
+    const bodyCode = stripNonCode(body);
+    const asserts = Math.max(0, (bodyCode.match(ASSERT) ?? []).length - (body.match(TAUTOLOGY) ?? []).length);
+    const tags = [
+      ...(title.match(/\b(?:REQ|SEC|NFR)-\d+\b/g) ?? []),
+      ...[...body.matchAll(TAG_LINE)].flatMap((mm) => mm[1].match(/(?:REQ|SEC|NFR)-\d+/g) ?? []),
+    ];
+    out.push({ title, asserts, tags: [...new Set(tags)] });
+  }
+  return out;
+}
+
 const SKIP = /\b(it|test|describe)\.(skip|todo|fixme|fails)\b|\b(xit|xtest|xdescribe)\s*\(|\bxfail\b/g;
 const CASES = /\b(it|test)(?:\.\w+)?\s*\(/g;
 const TAG_LINE = /^[ \t]*(?:\/\/|\/\*+|\*)[ \t]*@req[ \t]+((?:(?:REQ|SEC|NFR)-\d+[\s,]*)+)/gm;
@@ -198,6 +242,7 @@ const files = walk(testsDir)
   const rawAsserts = (code.match(ASSERT) ?? []).length;
   const inCases = assertionsInCases(code);
   const tautologies = (text.match(TAUTOLOGY) ?? []).length;
+  const casesInFile = casesInFileSeveral(text);
   return {
     file: f,
     sha: crypto.createHash("sha256").update(text).digest("hex").slice(0, 16),
@@ -207,6 +252,8 @@ const files = walk(testsDir)
     skips: (text.match(SKIP) ?? []).length,
     cases: (text.match(CASES) ?? []).length,
     tags: [...text.matchAll(TAG_LINE)].flatMap((m) => m[1].match(/(?:REQ|SEC|NFR)-\d+/g) ?? []),
+    assertingCases: casesInFile.filter((c) => c.asserts > 0),
+    caseTags: casesInFile.flatMap((c) => c.tags),
   };
 });
 
@@ -228,7 +275,26 @@ for (const f of files) {
     problems.push(`${f.file}: tagged ${[...new Set(f.tags)].join(",")} but contains 0 real assertions in a test case — ${why}`);
     continue;
   }
-  if (f.skips === 0) for (const id of f.tags) covered.set(id, [...(covered.get(id) ?? []), f.file]);
+  if (f.skips > 0) continue;
+  for (const id of f.caseTags) if (!ids.has(id)) problems.push(`${f.file}: a test case names unknown requirement ${id}`);
+  if (f.caseTags.length) {
+    // The cases say what they test, so only those cases count, and a tag with no case behind it
+    // is a claim the file does not keep.
+    for (const c of f.assertingCases) for (const id of c.tags) covered.set(id, [...(covered.get(id) ?? []), f.file]);
+    const named = new Set(f.assertingCases.flatMap((c) => c.tags));
+    for (const id of f.tags) {
+      if (!named.has(id)) problems.push(`${f.file}: tagged ${id} but no asserting test case names it — a file-level tag is a declaration, not coverage`);
+    }
+    continue;
+  }
+  // No per-case tags: one asserting case per tagged requirement, in tag order.
+  const tagList = [...new Set(f.tags)];
+  if (tagList.length > f.assertingCases.length) {
+    problems.push(
+      `${f.file}: tagged ${tagList.length} requirement(s) (${tagList.join(", ")}) but only ${f.assertingCases.length} test case(s) with an assertion — name the requirement in each case, or add the missing cases`,
+    );
+  }
+  for (const id of tagList.slice(0, f.assertingCases.length)) covered.set(id, [...(covered.get(id) ?? []), f.file]);
 }
 
 // A requirement may name the file that is supposed to test it. If it does, the file must

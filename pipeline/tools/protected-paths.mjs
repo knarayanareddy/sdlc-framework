@@ -7,7 +7,8 @@
 //
 // Exit codes: 0 clean · 1 violation · 3 couldn't evaluate (no git) → record NOT_VERIFIED.
 import fs from "node:fs";
-import { parseArgs, readJson, run, globToRegExp, paint } from "./lib/common.mjs";
+import { parseArgs, readJson, run, globToRegExp, paint, sha256 } from "./lib/common.mjs";
+import { verifyLedger } from "./lib/ledger.mjs";
 
 const { flags } = parseArgs();
 const configPath = flags.config ?? "pipeline.config.json";
@@ -106,17 +107,62 @@ for (const line of run("git status --porcelain").stdout.split("\n")) {
   } else changed.add(file);
 }
 
+// Under --strict the orchestrator-owned files are not waved through: the check asks the ledger
+// whether they are what the orchestrator wrote. An appended, verifying chain and a progress file
+// the chain cross-checks are fine; a rewritten ledger or a progress file that disagrees with it
+// is a violation (B-34: nothing forced --strict at release).
+const ledgerPath = flags.ledger ?? "docs/gate-ledger.jsonl";
+function orchestratorIntact() {
+  if (!fs.existsSync(ledgerPath)) return `no ledger at ${ledgerPath}`;
+  const progressDoc = fs.existsSync(progressPath) ? readJson(progressPath) : null;
+  const res = verifyLedger(ledgerPath, { progress: progressDoc, cwd: process.cwd() });
+  if (!res.ok) return `the ledger does not verify: ${res.error}`;
+  const before = run(`git show ${resolvedRef}:${ledgerPath}`);
+  if (before.code === 0) {
+    const now = fs.readFileSync(ledgerPath, "utf8");
+    if (!now.startsWith(before.stdout)) return "the ledger is not append-only since the base commit";
+  }
+  return null;
+}
+
 const violations = [];
 const warnings = [];
+const ownedChecks = [];
 for (const file of [...changed].sort()) {
   for (const rule of protectedPaths) {
     const re = globToRegExp(rule.glob);
     if (!re.test(file)) continue;
     const isNew = !inRef.has(file);
+    // At release, an orchestrator-owned file is judged by the ledger whatever its age: a ledger
+    // written from scratch is not "new, therefore fine".
+    if (rule.orchestratorOwned && strict) {
+      const why = orchestratorIntact();
+      const entry = { file, glob: rule.glob, why: rule.why, kind: isNew ? "new-file-in-frozen-area" : "modified-or-deleted" };
+      if (why) violations.push({ ...entry, why: `${rule.why}; ${why}` });
+      else ownedChecks.push(entry);
+      break;
+    }
     if (rule.allowNew && isNew) continue;
+    // A file `pipeline init` wrote after the base commit is new by construction. Accept it only
+    // while its digest is the one init recorded, so editing it afterwards is still a violation.
+    const boot = isNew && progress.bootstrap ? progress.bootstrap[file] : null;
+    if (boot) {
+      let now = null;
+      try {
+        now = sha256(fs.readFileSync(file, "utf8"));
+      } catch {
+        now = null;
+      }
+      if (now === boot) continue;
+      violations.push({ file, glob: rule.glob, why: `${rule.why}; it was written by pipeline init and has changed since` , kind: "modified-or-deleted" });
+      break;
+    }
     const entry = { file, glob: rule.glob, why: rule.why, kind: isNew ? "new-file-in-frozen-area" : "modified-or-deleted" };
-    if (rule.orchestratorOwned && !strict) warnings.push(entry);
-    else violations.push(entry);
+    if (rule.orchestratorOwned) {
+      warnings.push(entry);
+      break;
+    }
+    violations.push(entry);
     break;
   }
 }
@@ -130,13 +176,15 @@ const result = {
   rules: protectedPaths.length,
   violations,
   warnings,
+  orchestratorChecked: ownedChecks.map((c) => c.file),
 };
 
 if (asJson) console.log(JSON.stringify(result, null, 2));
 else {
   console.log(`ref: ${resolvedRef}${baseCommit ? " (init commit)" : ""}  changed files: ${changed.size}  protected rules: ${protectedPaths.length}`);
   if (!baseCommit) console.log(paint.yellow("warn: no baseCommit in docs/progress.json, so edits that were committed cannot be seen. Re-run `pipeline init --force` or pass --ref <sha>."));
-  for (const w of warnings) console.log(paint.yellow(`warn ${w.file} — ${w.kind} (${w.glob}): orchestrator-owned; integrity is enforced by the ledger chain${strict ? "" : " (use --strict at release)"}`));
+  for (const w of warnings) console.log(paint.yellow(`warn ${w.file} — ${w.kind} (${w.glob}): orchestrator-owned; not judged here. \`verify\` and \`phase done 12\` run this check with --strict`));
+  for (const c of ownedChecks) console.log(`ok   ${c.file} — orchestrator-owned (${c.kind}), and the ledger verifies`);
   for (const v of violations) console.log(`PROBLEM ${v.file} — ${v.kind} (${v.glob}): ${v.why}`);
   console.log(violations.length ? "RESULT: FAIL" : "RESULT: PASS");
 }

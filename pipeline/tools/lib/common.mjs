@@ -76,6 +76,12 @@ export function substantialFile(p, minBytes = 64) {
   }
 }
 
+// Commands run through a shell, because a gate command is a command line a human would type
+// ("node --test && node tools/x.mjs"). That means every string that reaches here is executable
+// text: `pipeline.config.json` → commands.*, `--cmd` (only after a human allowlists the exact
+// string), `PIPELINE_VERIFIER_CMD`, and the glob/path values interpolated into our own command
+// strings. The trust boundary is the config file and the environment, not the sandbox: anyone
+// who can edit either can run code as the user. See README "What runs your commands" (B-35).
 export function run(cmd, { cwd = process.cwd(), timeout = 900_000, env } = {}) {
   const started = Date.now();
   const res = spawnSync(cmd, {

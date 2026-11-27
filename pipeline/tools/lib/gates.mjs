@@ -32,7 +32,7 @@ export const PHASES = Object.freeze([
   { id: "09", title: "Patch + post-patch validation", prompt: "v2-09-patch-and-validate.md", gates: ["G9"], requiresGates: ["G8"], requiresPhases: ["08"], doneChecks: ["findings", "coverage", "protected"] },
   { id: "10", title: "Release readiness", prompt: "v2-10-release-readiness.md", gates: ["G10"], requiresGates: ["G9"], requiresPhases: ["09"], doneChecks: ["release", "protected"] },
   { id: "11", title: "Deploy + post-deploy verification", prompt: "v2-11-deploy-verify.md", gates: ["G11"], requiresGates: ["G10"], requiresPhases: ["10"], doneChecks: [] },
-  { id: "12", title: "Pipeline evaluation + calibration", prompt: "v2-12-pipeline-eval.md", gates: ["G12"], requiresGates: ["G11"], requiresPhases: ["11"], doneChecks: ["metrics"] },
+  { id: "12", title: "Pipeline evaluation + calibration", prompt: "v2-12-pipeline-eval.md", gates: ["G12"], requiresGates: ["G11"], requiresPhases: ["11"], doneChecks: ["metrics", "protected:strict"] },
 ]);
 
 export const PHASE_IDS = Object.freeze(PHASES.map((p) => p.id));
