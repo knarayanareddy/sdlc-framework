@@ -191,3 +191,54 @@ test("a spec the counter cannot read is NOT_VERIFIED, not zero requirements", ()
   assert.match(res.stdout, /NOT_VERIFIED: .*no REQ-\/SEC-\/NFR- ids/);
   assert.equal(fs.existsSync(path.join(dir, "docs/12-eval/metrics.json")), false, "no metrics file from an unreadable spec");
 });
+
+// B-26: a computed file that no longer matches its sources is a claim about files that moved.
+const check = (dir, file) =>
+  spawnSync("node", [TOOL, "--check", "--in", file ?? path.join(dir, "docs/12-eval/metrics.json")], { encoding: "utf8", cwd: dir });
+
+test("--check passes while every source still matches", () => {
+  const dir = project();
+  assert.equal(run(dir).status, 0);
+  const r = check(dir);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /still matches every source/);
+});
+
+test("--check fails when a source changed after the metrics were computed", () => {
+  const dir = project();
+  assert.equal(run(dir).status, 0);
+  const findings = path.join(dir, "docs/08-redteam/run-1/findings.json");
+  const doc = JSON.parse(fs.readFileSync(findings, "utf8"));
+  doc.findings[0].status = "rejected";
+  fs.writeFileSync(findings, JSON.stringify(doc, null, 2));
+  const r = check(dir);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /STALE/);
+  assert.match(r.stdout, /findings: .* changed since the metrics were computed/);
+});
+
+test("--check fails when a source is gone", () => {
+  const dir = project();
+  assert.equal(run(dir).status, 0);
+  fs.rmSync(path.join(dir, "docs/08-redteam/run-1/findings.json"));
+  const r = check(dir);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stdout, /findings: .* is gone/);
+});
+
+test("--check refuses a metrics file this tool did not compute", () => {
+  const dir = project();
+  const file = path.join(dir, "docs/12-eval/metrics.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ computed: true, counts: { requirements: 42 } }));
+  const r = check(dir);
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /was not computed by this tool/);
+});
+
+test("--check on a missing file is NOT_VERIFIED, not a pass", () => {
+  const dir = project();
+  const r = check(dir);
+  assert.equal(r.status, 3, r.stdout + r.stderr);
+  assert.match(r.stdout, /no metrics file/);
+});

@@ -39,7 +39,7 @@ const SPEC = [
   "",
 ].join("\n");
 
-function project(label = "p0") {
+function project(label = "p0", env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${label}-`));
   git(dir, "init", "-q");
   fs.mkdirSync(path.join(dir, "docs", "02-spec"), { recursive: true });
@@ -48,7 +48,7 @@ function project(label = "p0") {
   fs.writeFileSync(path.join(dir, "README.md"), `# example project\n\n${"filler line\n".repeat(8)}`);
   git(dir, "add", "-A");
   git(dir, "commit", "-qm", "base");
-  const init = cli(dir, ["init"]);
+  const init = cli(dir, ["init"], env);
   assert.equal(init.status, 0, `init failed:\n${init.stdout}${init.stderr}`);
   return dir;
 }
@@ -384,12 +384,13 @@ test("gate G9 is NOT_VERIFIED when independence.builderFamily is unknown", () =>
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("with the builder declared, independence is judged and can pass", () => {
-  const dir = project("indep2");
+test("with the builder pinned at init, independence is judged and can pass", () => {
+  // The builder family is pinned in the ledger genesis, so it must be declared at init rather
+  // than edited into the config afterwards (B-31).
+  const dir = project("indep2", { PIPELINE_BUILDER_MODEL: "claude-sonnet-4" });
   const cfgFile = path.join(dir, "pipeline.config.json");
   const cfg = readJson(cfgFile);
-  // A verifier from another family, recorded for the gate the tool requires.
-  cfg.independence = { ...(cfg.independence ?? {}), builderFamily: "anthropic", requireFor: ["G7"] };
+  cfg.independence = { ...(cfg.independence ?? {}), requireFor: ["G7"] };
   fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
   appendLedger(path.join(dir, "docs", "gate-ledger.jsonl"), {
     phase: "07", gate: "G7", status: "passed", command: "true", exitCode: 0, commit: "abc1234", modelFamily: "gpt-5",
@@ -397,7 +398,12 @@ test("with the builder declared, independence is judged and can pass", () => {
   const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
   assert.equal(res.status, 0, res.stdout + res.stderr);
   assert.match(res.stdout, /G9 PASSED/);
-  assert.equal(progressOf(dir).gates.G9.status, "passed");
+  const genesis = fs
+    .readFileSync(path.join(dir, "docs", "gate-ledger.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))[0];
+  assert.equal(genesis.builderFamily, "anthropic", "the genesis entry pins the family independence is judged against");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -714,16 +720,19 @@ test("verify --check does not re-run a command that writes files", () => {
   assert.equal(cli(dir, ["gate", "G12", "--builtin", "metrics"]).status, 0);
   const metricsFile = path.join(dir, "docs/12-eval/metrics.json");
   assert.ok(fs.existsSync(metricsFile));
-  fs.writeFileSync(metricsFile, '{"hand":"edited"}');
+  // Whitespace, not content: the file stays a valid, still-fresh metrics snapshot, so this test
+  // is about "was it rewritten", not about the B-26 freshness check.
+  const marked = `${fs.readFileSync(metricsFile, "utf8").trimEnd()} \n`;
+  fs.writeFileSync(metricsFile, marked);
 
   const checked = cli(dir, ["verify", "--check"]);
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
   assert.match(checked.stdout, /not re-run: the command writes files/);
-  assert.equal(fs.readFileSync(metricsFile, "utf8"), '{"hand":"edited"}', "the read-only check left the file alone");
+  assert.equal(fs.readFileSync(metricsFile, "utf8"), marked, "the read-only check left the file alone");
 
   const plain = cli(dir, ["verify"]);
   assert.equal(plain.status, 0, plain.stdout + plain.stderr);
-  assert.notEqual(fs.readFileSync(metricsFile, "utf8"), '{"hand":"edited"}', "the plain verify re-ran the command");
+  assert.notEqual(fs.readFileSync(metricsFile, "utf8"), marked, "the plain verify re-ran the command");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -733,5 +742,140 @@ test("`manual` in a --builtin list is an error, not a silent omission (B-29)", (
   assert.equal(r.status, 1, r.stdout + r.stderr);
   assert.match(r.stderr, /"manual" is not a builtin/);
   assert.equal(progressOf(dir).gates.G7, undefined, "the gate was certified by the half that ran");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// B-26: a metrics file that no longer matches its sources is a claim about files that moved.
+test("verify blocks on a stale metrics file, and lists what moved", () => {
+  const dir = project("metrics-stale");
+  // findings.json is one of the sources metrics.json records; it has to exist before G12 runs.
+  const findingsFile = path.join(dir, "docs/08-redteam/run-1/findings.json");
+  fs.mkdirSync(path.dirname(findingsFile), { recursive: true });
+  fs.writeFileSync(findingsFile, JSON.stringify({ run: "r1", mode: "FULL", findings: [] }));
+  assert.equal(cli(dir, ["gate", "G12", "--builtin", "metrics"]).status, 0);
+  const metricsFile = path.join(dir, "docs/12-eval/metrics.json");
+  const before = JSON.parse(fs.readFileSync(metricsFile, "utf8"));
+  assert.ok(before.derivedFrom.progress, "the fixture must have progress as a source");
+  // findings.json is pinned in the ledger (2.9.0), so editing it is caught earlier; progress.json
+  // is the orchestrator's own file, and a change to it is exactly what the snapshot cannot see.
+  const progressFile = path.join(dir, "docs", "progress.json");
+  const progressDoc = JSON.parse(fs.readFileSync(progressFile, "utf8"));
+  progressDoc.note = "edited after the metrics were computed";
+  fs.writeFileSync(progressFile, JSON.stringify(progressDoc, null, 2));
+
+  const r = cli(dir, ["verify", "--check"]);
+  assert.notEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout + r.stderr, /metrics\.json is stale/);
+  assert.match(r.stdout + r.stderr, /progress: .* changed since the metrics were computed/);
+
+  // Recording a gate refreshes it, and the same verify passes.
+  assert.equal(cli(dir, ["gate", "G12", "--builtin", "metrics"]).status, 0);
+  const after = cli(dir, ["verify", "--check"]);
+  assert.equal(after.status, 0, after.stdout + after.stderr);
+  assert.match(after.stdout, /metrics: docs\/12-eval\/metrics\.json still matches its sources/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// B-31 — the builder's family is pinned in the ledger, not declared in a file the builder edits
+// ---------------------------------------------------------------------------
+test("a builder family declared after init is NOT_VERIFIED, not independence", () => {
+  const dir = project("indep-late"); // init with no family: the genesis pins "unknown"
+  const cfgFile = path.join(dir, "pipeline.config.json");
+  const cfg = readJson(cfgFile);
+  cfg.independence = { ...(cfg.independence ?? {}), builderFamily: "anthropic", requireFor: ["G7"] };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  appendLedger(path.join(dir, "docs", "gate-ledger.jsonl"), {
+    phase: "07", gate: "G7", status: "passed", command: "true", exitCode: 0, commit: "abc1234", modelFamily: "gpt-5",
+  });
+
+  const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /declared in configuration or the environment, not pinned in the ledger/);
+  assert.match(res.stdout, /pipeline\.mjs attest --builder-family anthropic/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a declaration that disagrees with the pinned family is a FAIL, not a re-declaration", () => {
+  const dir = project("indep-tamper", { PIPELINE_BUILDER_MODEL: "claude-sonnet-4" });
+  const cfgFile = path.join(dir, "pipeline.config.json");
+  const cfg = readJson(cfgFile);
+  // Rewrite the pin's neighbour: the builder claims a different family than the record.
+  cfg.independence = { ...(cfg.independence ?? {}), builderFamily: "openai", requireFor: ["G7"] };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  appendLedger(path.join(dir, "docs", "gate-ledger.jsonl"), {
+    phase: "07", gate: "G7", status: "passed", command: "true", exitCode: 0, commit: "abc1234", modelFamily: "gpt-5",
+  });
+
+  const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(res.stdout, /the ledger pins "anthropic" at init, the declaration says "openai"/);
+  assert.equal(progressOf(dir).gates.G9.status, "failed", "a disagreement is a failure, not a NOT_VERIFIED");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a human at init can attest the builder family, and the ledger records who", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "indep-attested-"));
+  git(dir, "init", "-q");
+  fs.mkdirSync(path.join(dir, "docs", "02-spec"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "02-spec", "SPEC.md"), SPEC);
+  fs.writeFileSync(path.join(dir, "README.md"), "# x\n");
+  git(dir, "add", "-A");
+  git(dir, "commit", "-qm", "base");
+  const init = cli(dir, ["init", "--builder-family", "anthropic", "--attested-by", "Ada Lovelace"], { PIPELINE_HUMAN: "1" });
+  assert.equal(init.status, 0, init.stdout + init.stderr);
+
+  const genesis = fs.readFileSync(path.join(dir, "docs", "gate-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l))[0];
+  assert.equal(genesis.builderFamily, "anthropic");
+  assert.equal(genesis.builderFamilyAttestedBy, "Ada Lovelace");
+  assert.ok(genesis.builderFamilyAttestedAt, "an attestation without a time is a claim without a moment");
+
+  // The tool reports the pin and who stood behind it.
+  const tool = spawnSync("node", [path.join(HERE, "independence.mjs"), "--ledger", "docs/gate-ledger.jsonl", "--config", "pipeline.config.json"], { cwd: dir, encoding: "utf8" });
+  assert.match(tool.stdout, /pinned in the ledger genesis, attested by Ada Lovelace/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the report reads the pinned family, and calls a disagreement a FAIL", () => {
+  const dir = project("report-family", { PIPELINE_BUILDER_MODEL: "claude-sonnet-4" });
+  assert.equal(cli(dir, ["report"]).status, 0);
+  let report = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.doesNotMatch(report, /pipeline\.config\.json says/);
+
+  const cfgFile = path.join(dir, "pipeline.config.json");
+  const cfg = readJson(cfgFile);
+  cfg.independence = { ...(cfg.independence ?? {}), builderFamily: "openai" };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  assert.equal(cli(dir, ["report"]).status, 0);
+  report = fs.readFileSync(path.join(dir, "docs", "FINAL-REPORT.md"), "utf8");
+  assert.match(report, /\*\*FAIL\*\* — the ledger pins the builder as anthropic, pipeline\.config\.json says openai/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a human can pin the builder family into the ledger with `pipeline attest`", () => {
+  const dir = project("attest");
+  // Without a human, the command refuses: a family the builder types is what B-31 is about.
+  const noHuman = cli(dir, ["attest", "--builder-family", "anthropic", "--attested-by", "Ada"]);
+  assert.notEqual(noHuman.status, 0, noHuman.stdout + noHuman.stderr);
+  assert.match(noHuman.stderr, /PIPELINE_HUMAN=1/);
+
+  const attested = cli(dir, ["attest", "--builder-family", "anthropic", "--attested-by", "Ada Lovelace"], { PIPELINE_HUMAN: "1" });
+  assert.equal(attested.status, 0, attested.stdout + attested.stderr);
+  const last = fs.readFileSync(path.join(dir, "docs", "gate-ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+  assert.equal(last.gate, "BUILDER_FAMILY");
+  assert.equal(last.builderFamily, "anthropic");
+  assert.equal(last.builderFamilyAttestedBy, "Ada Lovelace");
+
+  // Independence now has a standard to judge against.
+  const cfgFile = path.join(dir, "pipeline.config.json");
+  const cfg = readJson(cfgFile);
+  cfg.independence = { ...(cfg.independence ?? {}), requireFor: ["G7"] };
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  appendLedger(path.join(dir, "docs", "gate-ledger.jsonl"), {
+    phase: "07", gate: "G7", status: "passed", command: "true", exitCode: 0, commit: "abc1234", modelFamily: "gpt-5",
+  });
+  const res = cli(dir, ["gate", "G9", "--builtin", "independence", "--model", "gpt-5"]);
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.match(res.stdout, /G9 PASSED/);
   fs.rmSync(dir, { recursive: true, force: true });
 });

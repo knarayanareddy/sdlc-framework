@@ -41,11 +41,16 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
   claims "confirmed" without a `file:line`.
 - The verifier family must differ from the author's. Unknown model → `family: unknown` → refused.
 - `independence.mjs` reads what the ledger *recorded* and returns PASS / FAIL (same family) /
-  NOT_VERIFIED (no model recorded, or **no known builder family**: with `builderFamily` left at
-  `unknown` nothing can be independent of it, so the answer is NOT_VERIFIED and exit 3).
-  Set `independence.builderFamily`, pass `--builder-family`, or export `PIPELINE_BUILDER_MODEL`
-  (`pipeline init` derives the family from it when it can, and warns when it cannot). `pipeline gate G9 --builtin independence` runs it, and
-  exit 3 lands in the ledger as NOT_VERIFIED with the reason and a human command.
+  NOT_VERIFIED (no model recorded, or **no pinned builder family**: with nothing pinned nothing
+  can be independent of it, so the answer is NOT_VERIFIED and exit 3).
+  The family is pinned in the hash chain, because `pipeline.config.json` is a file the builder
+  edits: `pipeline init` writes it into the genesis entry (from `independence.builderFamily`,
+  `--builder-family` or `PIPELINE_BUILDER_MODEL`), and a human can pin it later without
+  re-initialising with `PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs attest --builder-family
+  anthropic --attested-by "<your name>"`. A family that appears only in config or the environment
+  after init is NOT_VERIFIED; one that contradicts the pin is FAIL.
+  `pipeline gate G9 --builtin independence` runs it, and exit 3 lands in the ledger as
+  NOT_VERIFIED with the reason and a human command.
 - `pipeline report` prints the independence verdict in `FINAL-REPORT.md`.
 
 ### What only you can do
@@ -87,7 +92,7 @@ node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --config pi
 ### How you know it worked
 
 ```bash
-node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl --builder-family anthropic
+node pipeline/tools/independence.mjs --ledger docs/gate-ledger.jsonl   # after init/attest pinned the family
 # expect: RESULT: PASS, and every required gate marked INDEPENDENT
 ```
 
