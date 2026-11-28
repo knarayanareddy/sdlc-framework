@@ -128,9 +128,29 @@ const readProgress = () =>
     notVerified: [],
   });
 
+// docs/12-eval/metrics.json is a snapshot of progress, ledger, findings, spec and calibration, so
+// writing progress makes the snapshot out of date by definition. Recompute it here rather than
+// leave a file that `verify` would call stale the moment the orchestrator wrote anything (B-26).
+// A file that is stale is then stale for the reason the check exists: something changed it from
+// outside the orchestrator.
+let refreshingMetrics = false;
+function refreshMetrics() {
+  if (refreshingMetrics) return;
+  const file = abs(path.join(cfg.evalDir, "metrics.json"));
+  if (!fs.existsSync(file)) return;
+  refreshingMetrics = true;
+  try {
+    const res = run(builtin("metrics"), { cwd: projectRoot, timeout: 300_000 });
+    if (res.code !== 0) warn(`could not refresh ${cfg.evalDir}/metrics.json: ${tail(res.stdout || res.stderr, 2)}`);
+  } finally {
+    refreshingMetrics = false;
+  }
+}
+
 const writeProgress = (p) => {
   p.updatedAt = new Date().toISOString();
   writeJson(abs(cfg.progress), p);
+  refreshMetrics();
 };
 
 function commitSha() {
@@ -442,6 +462,8 @@ function recordGate(gate, entry, extra = {}) {
     { cwd: projectRoot },
   );
   if (reportExisted) writeReport({ quiet: true });
+  // A gate appends to the ledger, so the metrics snapshot is one row out of date: refresh it.
+  refreshMetrics();
 }
 
 // A verdict is evidence of independence only when `verifier-route dispatch` produced it. The
@@ -481,6 +503,29 @@ function attestedVerdict() {
 // `report` is a function because it is now called from two places: the command, and the
 // end of phases 10-12, where a stale FINAL-REPORT.md is worse than none (REVIEW-OF-SECOND-OPINION.md P5).
 // `progress.rounds` is derived from the findings file, not typed (see lib/rounds.mjs).
+// B-26: re-hash what docs/12-eval/metrics.json says it was computed from. Returns the list of
+// problems (empty when fresh), or null when there is no computed file to check.
+function metricsStaleness() {
+  const file = abs(path.join(cfg.evalDir, "metrics.json"));
+  if (!fs.existsSync(file)) return null;
+  let doc;
+  try {
+    doc = readJson(file);
+  } catch {
+    return ["the file is not valid JSON"];
+  }
+  if (doc.computed !== true || !doc.derivedFrom) return ["the file was not computed by metrics-compute"];
+  const problems = [];
+  for (const [key, src] of Object.entries(doc.derivedFrom)) {
+    // `derivedFrom` paths are relative to the project root; verify may run from elsewhere.
+    const srcFile = src?.path ? abs(src.path) : null;
+    if (!srcFile) problems.push(`${key}: no path recorded`);
+    else if (!fs.existsSync(srcFile)) problems.push(`${key}: ${src.path} is gone`);
+    else if (sha256(fs.readFileSync(srcFile, "utf8")) !== src.sha256) problems.push(`${key}: ${src.path} changed since the metrics were computed`);
+  }
+  return problems;
+}
+
 // Commands recorded in the ledger that write to the tree when re-run.
 const READS_ONLY_UNSAFE = /(entrypoints\.mjs|dast\.mjs run|metrics-compute\.mjs|calibrate\.mjs (plan|score|template)|tripwire\.mjs|freeze)/;
 
@@ -538,7 +583,17 @@ function writeReport({ quiet = false } = {}) {
         : `**inconclusive** for ${calib.pipelineVersion}: recall ${(calib.recall * 100).toFixed(1)}% on ${calib.planted} bugs${calib.zeroRecallClasses?.length ? `, no detection for ${calib.zeroRecallClasses.join(", ")}` : ""}`;
 
   const required = cfg.independence?.requireFor ?? ["G7", "G9", "G12"];
-  const builderFamily = cfg.independence?.builderFamily ?? "unknown";
+  // The family every "independent of what?" answer is measured against is the one pinned in the
+  // genesis entry, not a config field (B-31). A config that disagrees with the pin is reported as
+  // what it is: the record and the declaration cannot both be true.
+  const pinEntry = [...entries].reverse().find((e) => e.builderFamily) ?? null;
+  const pinnedFamily = String(pinEntry?.builderFamily ?? "unknown");
+  const configFamily = String(cfg.independence?.builderFamily ?? "unknown");
+  const familyDisagreement =
+    pinnedFamily !== "unknown" && configFamily !== "unknown" && pinnedFamily !== configFamily
+      ? `the ledger pins the builder as ${pinnedFamily}, pipeline.config.json says ${configFamily}`
+      : null;
+  const builderFamily = pinnedFamily !== "unknown" ? pinnedFamily : configFamily;
   const last = new Map(entries.map((e) => [e.gate, e]));
   const judged = required.filter((g) => last.has(g) && last.get(g).status !== "NOT_VERIFIED");
   const noModel = judged.filter((g) => !last.get(g).modelFamily);
@@ -553,7 +608,9 @@ function writeReport({ quiet = false } = {}) {
     const f = familyOf(e.modelFamily);
     return builderFamily !== "unknown" && f === builderFamily;
   });
-  const independenceLine = sameFamily.length
+  const independenceLine = familyDisagreement
+    ? `**FAIL** — ${familyDisagreement}; neither can be used to judge independence`
+    : sameFamily.length
     ? `**FAIL** — ${sameFamily.join(", ")} were verified inside the builder's own family (${builderFamily})`
     : noModel.length
       ? `**NOT_VERIFIED** — ${noModel.join(", ")} recorded no verifier model, so independence is unproven`
@@ -571,7 +628,10 @@ function writeReport({ quiet = false } = {}) {
   try {
     const m = readJson(abs(path.join(cfg.evalDir, "metrics.json")));
     if (m.computed === true && m.derivedFrom) {
-      metricsLine = `computed from ${Object.keys(m.derivedFrom).join(", ")}${m.at ? ` at ${m.at}` : ""}`;
+      const stale = metricsStaleness() ?? [];
+      metricsLine = `computed from ${Object.keys(m.derivedFrom).join(", ")}${m.at ? ` at ${m.at}` : ""}${
+        stale.length ? ` — **STALE**: ${stale.join("; ")}; re-run \`pipeline gate G12 --builtin metrics\`` : ""
+      }`;
     } else {
       metricsLine = "**hand-written** (`computed: false`) — these numbers are not derived from the ledger. Run `pipeline gate G12 --builtin metrics`.";
     }
@@ -679,9 +739,9 @@ switch (command) {
       // Independence is judged against the builder's own family. If the runner already knows
       // the model, record it now: leaving "unknown" made every cross-family verifier look
       // independent of nothing (REVIEW-OF-SECOND-OPINION.md, F-02).
-      const declared = String(rest.independence?.builderFamily ?? "unknown");
-      const derived = declared === "unknown" ? familyOf(process.env.PIPELINE_BUILDER_MODEL ?? "") : "unknown";
-      const builderFamily = declared !== "unknown" ? declared : derived === "unknown" ? "unknown" : derived;
+      const chosen = String(flags["builder-family"] ?? rest.independence?.builderFamily ?? "unknown");
+      const derived = chosen === "unknown" ? familyOf(process.env.PIPELINE_BUILDER_MODEL ?? "") : "unknown";
+      const builderFamily = chosen !== "unknown" ? chosen : derived === "unknown" ? "unknown" : derived;
       const independence = { ...(rest.independence ?? {}), builderFamily };
       writeJson(abs(cfg.configPath), { ...rest, independence, commands });
       if (builderFamily === "unknown") {
@@ -692,6 +752,15 @@ switch (command) {
     }
     // The commit everything is diffed against. Without it, a builder can `git commit` its
     // edits and protected-paths sees a clean tree (REVIEW-OF-SECOND-OPINION.md, F-14).
+    // The builder's family is the thing every independence judgement is compared against, so it
+    // is pinned in the hash-chained genesis rather than left as a config field the builder can
+    // edit afterwards (B-31). A human present at init can attest it; the pipeline records when
+    // they did, and `independence.mjs` reports attested vs declared.
+    const builderFamily = String(flags["builder-family"] ?? (fs.existsSync(abs(cfg.configPath)) ? readJson(abs(cfg.configPath)).independence?.builderFamily : null) ?? "unknown");
+    if (flags["attested-by"] && process.env.PIPELINE_HUMAN !== "1") {
+      fail("--attested-by needs PIPELINE_HUMAN=1 in the environment, so the name is a human's claim and not the builder's");
+    }
+    const builderFamilyAttestedBy = flags["attested-by"] ? String(flags["attested-by"]).trim() : null;
     const baseCommit = commitSha();
     // Files `init` writes after the base commit live inside frozen areas, so a diff against the
     // base commit calls them "new file in a frozen area" the moment a project starts. Record the
@@ -729,6 +798,8 @@ switch (command) {
           // Pinned here, not only in progress.json: progress.json is a file the agent can edit,
           // and baseCommit is what protects every later protected-path check (2.9.0).
           baseCommit,
+          builderFamily,
+          ...(builderFamilyAttestedBy ? { builderFamilyAttestedBy, builderFamilyAttestedAt: new Date().toISOString() } : {}),
           inputs: pinInputs(),
         },
         { cwd: projectRoot },
@@ -1070,6 +1141,18 @@ switch (command) {
     } else {
       console.log(paint.dim("protected paths: clean (strict; orchestrator-owned files match the ledger)"));
     }
+    // 4 · metrics.json must still describe the files it was computed from (B-26). Hashing is
+    // read-only, so this runs under --check as well.
+    const staleMetrics = metricsStaleness();
+    if (staleMetrics === null) {
+      console.log(paint.dim(`metrics: no ${cfg.evalDir}/metrics.json yet`));
+    } else if (staleMetrics.length) {
+      console.error(paint.red(`metrics: ${cfg.evalDir}/metrics.json is stale — ${staleMetrics.join("; ")}`));
+      console.error(`human command: node pipeline/bin/pipeline.mjs gate G12 --builtin metrics`);
+      blocked = true;
+    } else {
+      console.log(paint.dim(`metrics: ${cfg.evalDir}/metrics.json still matches its sources`));
+    }
     if (blocked) process.exit(1);
 
     const only = flags.gate ? [String(flags.gate)] : null;
@@ -1191,6 +1274,7 @@ switch (command) {
           },
           { cwd: projectRoot },
         );
+        refreshMetrics();
       }
       ok(`phase ${id} started: ${spec.title}`);
       console.log(`prompt: ${path.relative(process.cwd(), path.join(PIPELINE_DIR, "prompts", spec.prompt))}`);
@@ -1263,6 +1347,9 @@ switch (command) {
       },
       { cwd: projectRoot },
     );
+    // The ledger just grew, so the metrics snapshot would be one row out of date before the
+    // report below quotes it.
+    refreshMetrics();
     ok(`phase ${id} done.${nextPhase(id) ? ` Next: ${nextPhase(id)}` : ""}`);
     // A report that still describes yesterday's gates is worse than no report: regenerate it
     // as the release phases complete (REVIEW-OF-SECOND-OPINION.md §7 P5).
@@ -1274,6 +1361,43 @@ switch (command) {
 
   case "freeze": {
     doFreeze({ refreeze: Boolean(flags.refreeze) });
+    break;
+  }
+
+  // A human pins the builder's family into the hash chain, without re-initialising the run.
+  // `independence.mjs` judges every verifier against this entry, so a family the builder typed
+  // into a config file after init cannot become the standard (B-31).
+  case "attest": {
+    const family = flags["builder-family"] ?? flags.family;
+    const by = flags["attested-by"] ? String(flags["attested-by"]).trim() : "";
+    if (!family) fail('usage: pipeline attest --builder-family <anthropic|openai|google|…> --attested-by "<your name>"');
+    if (!by || process.env.PIPELINE_HUMAN !== "1") {
+      fail(
+        !by
+          ? "attest needs --attested-by <name>: this is a human's claim about a machine, not the builder's"
+          : "--attested-by needs PIPELINE_HUMAN=1 in the environment, so the name is a human's claim and not the builder's",
+      );
+    }
+    if (familyOf(String(family)) === "unknown") warn(`"${family}" is not in the family table; independence will not be able to judge a verifier against it`);
+    const progress = readProgress();
+    appendLedger(
+      abs(cfg.ledger),
+      {
+        phase: progress.phase,
+        gate: "BUILDER_FAMILY",
+        status: "passed",
+        command: `pipeline attest --builder-family ${family}`,
+        commandSource: "human-attestation",
+        exitCode: 0,
+        commit: commitSha(),
+        builderFamily: String(family),
+        builderFamilyAttestedBy: by,
+        builderFamilyAttestedAt: new Date().toISOString(),
+      },
+      { cwd: projectRoot },
+    );
+    refreshMetrics();
+    ok(`builder family pinned: ${family} (attested by ${by}, recorded in ${cfg.ledger})`);
     break;
   }
 
@@ -1357,7 +1481,7 @@ switch (command) {
   }
 
   default:
-    fail(`unknown command "${command}". Try: init | status | next | gate | verify | phase | freeze | blocker | estimate | report | live | selftests`);
+    fail(`unknown command "${command}". Try: init | status | next | gate | verify | phase | freeze | attest | blocker | estimate | report | live | selftests`);
 }
 
 void STATUSES;

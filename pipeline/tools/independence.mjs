@@ -40,9 +40,8 @@ function normaliseFamily(value) {
 
 const declared = normaliseFamily(flags["builder-family"] ?? indepCfg.builderFamily ?? process.env.PIPELINE_BUILDER_FAMILY);
 const fromModel = normaliseFamily(flags["builder-model"] ?? indepCfg.builderModel ?? process.env.PIPELINE_BUILDER_MODEL ?? process.env.PIPELINE_BUILDER_MODEL);
-const builder = declared.family !== "unknown" ? declared : fromModel;
-const builderFamily = builder.family;
-const builderFamilySource = builder.source;
+const declaredBuilder = declared.family !== "unknown" ? declared : fromModel;
+
 const requireFor = String(flags.require ?? (indepCfg.requireFor ?? ["G3", "G4", "G7", "G9", "G10", "G11", "G12"]).join(","))
   .split(",")
   .map((s) => s.trim())
@@ -64,6 +63,49 @@ const entries = fs
 
 const lastByGate = new Map();
 for (const e of entries) lastByGate.set(e.gate, e);
+
+// The builder's family is what every "independent of what?" question is measured against, and
+// `pipeline.config.json` is a file the builder can edit. It is pinned in the ledger genesis at
+// init (B-31); a declaration that disagrees with the pin is the tamper case, and a pin that was
+// never written is a claim with nothing behind it.
+// The pin is the last ledger entry that names a builder family: the genesis written by
+// `pipeline init`, or a later `pipeline attest --builder-family …` by a human. Both are in the
+// hash chain, so changing either breaks the record.
+const pinEntry = [...entries].reverse().find((e) => e.builderFamily) ?? null;
+const pinned = normaliseFamily(pinEntry?.builderFamily);
+const pinnedAttestedBy = pinEntry?.builderFamilyAttestedBy ?? null;
+const pinnedWhere = pinEntry?.gate === "GENESIS" ? "the ledger genesis" : pinEntry ? `ledger entry ${pinEntry.seq} (${pinEntry.gate})` : "the ledger";
+// A flag typed on this command line is someone running the tool by hand, and the output says so.
+// A config field or an environment variable is editable by the builder, so it needs a pin.
+const declaredOnCommandLine = flags["builder-family"] !== undefined || flags["builder-model"] !== undefined;
+
+if (pinned.family !== "unknown" && declaredBuilder.family !== "unknown" && pinned.family !== declaredBuilder.family) {
+  console.log(paint.red(`builder family: the ledger pins "${pinned.family}" at init, the declaration says "${declaredBuilder.family}"`));
+  console.log("RESULT: FAIL — the record and the declaration disagree, so neither can be used to judge independence");
+  console.log(`human command: node pipeline/tools/independence.mjs --ledger ${ledgerPath}   # after restoring pipeline.config.json from the base commit`);
+  process.exit(1);
+}
+
+let builderFamily;
+let builderFamilySource;
+if (pinned.family !== "unknown") {
+  builderFamily = pinned.family;
+  builderFamilySource = `pinned in ${pinnedWhere}${pinnedAttestedBy ? `, attested by ${pinnedAttestedBy}` : " (no human attested it)"}`;
+} else if (declaredBuilder.family !== "unknown" && declaredOnCommandLine) {
+  builderFamily = declaredBuilder.family;
+  builderFamilySource = "declared on the command line (not pinned in the ledger)";
+} else if (declaredBuilder.family !== "unknown") {
+  // A config field or an environment variable can be set by the builder at any time, so it is
+  // not a fact about who built the software. It has to be pinned, and a human can pin it without
+  // re-initialising: `pipeline attest` appends the claim to the hash chain (B-31).
+  console.log(paint.yellow(`NOT_VERIFIED: the builder family ("${declaredBuilder.family}") is declared in configuration or the environment, not pinned in the ledger`));
+  console.log(`human command: PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs attest --builder-family ${declaredBuilder.family} --attested-by "<your name>"`);
+  console.log("  the pin is a hash-chained ledger entry, so a family cannot be changed afterwards without breaking the record");
+  process.exit(3);
+} else {
+  builderFamily = "unknown";
+  builderFamilySource = null;
+}
 
 // `modelFamily` holds whatever `gate --model` was given: a model id or a family name.
 function resolveFamily(value) {
@@ -125,6 +167,7 @@ const others = [...lastByGate.keys()].filter((g) => !requireFor.includes(g));
 const result = {
   builderFamily,
   builderFamilySource,
+  builderFamilyAttestedBy: pinnedAttestedBy,
   requireFor,
   independent,
   sameFamily,
@@ -159,7 +202,7 @@ if (unverified > 0) {
   if (builderFamily === "unknown") {
     // One line, and self-contained: `pipeline gate` records the human command verbatim, so a
     // command split over three lines is recorded as a sentence that cannot be run.
-    console.log(`human command: node pipeline/tools/independence.mjs --ledger <ledger> --builder-family <anthropic|openai|google|…>   # or set independence.builderFamily / PIPELINE_BUILDER_MODEL`);
+    console.log(`human command: PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs attest --builder-family <anthropic|openai|google|…> --attested-by "<your name>"   # pins it in the ledger`);
     if (flags.strict) fail("independence is required here and it was not established", 3);
     process.exit(3);
   }

@@ -5,6 +5,7 @@
 // one unless the computed one says where every number came from, so it does:
 // `derivedFrom` names each source and its sha256, and `computed: true` is set by this tool only.
 //
+//   node metrics-compute.mjs --check [--in docs/12-eval/metrics.json]   # re-hash the sources
 //   node metrics-compute.mjs [--progress docs/progress.json] [--ledger docs/gate-ledger.jsonl] \
 //        [--findings docs/08-redteam/run-1/findings.json] [--calibration calibration/calibration.json] \
 //        [--spec docs/02-spec/SPEC.md] [--out docs/12-eval/metrics.json] [--json]
@@ -23,6 +24,55 @@ const specPath = String(flags.spec ?? "docs/02-spec/Spec.md");
 const specCandidate = fs.existsSync(specPath) ? specPath : String(flags.spec ?? "docs/02-spec/SPEC.md");
 const out = String(flags.out ?? "docs/12-eval/metrics.json");
 const asJson = Boolean(flags.json);
+
+const checkMode = Boolean(flags.check);
+const checkIn = String(flags.in ?? out);
+
+// B-26: `derivedFrom` recorded the sha256 of every source, and nothing ever re-read them, so
+// "computed: true" and "stale" looked identical in the file and in the report. --check is that
+// reader: it re-hashes each source and says which one moved.
+if (checkMode) {
+  if (!fs.existsSync(checkIn)) {
+    console.log(paint.yellow(`NOT_VERIFIED: no metrics file at ${checkIn}`));
+    console.log(`human command: node pipeline/bin/pipeline.mjs gate G12 --builtin metrics`);
+    process.exit(3);
+  }
+  let doc;
+  try {
+    doc = readJson(checkIn);
+  } catch (error) {
+    console.log(paint.yellow(`NOT_VERIFIED: ${checkIn} is not valid JSON (${error.message})`));
+    process.exit(3);
+  }
+  if (doc.computed !== true || !doc.derivedFrom || Object.keys(doc.derivedFrom).length === 0) {
+    console.log(paint.yellow(`NOT_VERIFIED: ${checkIn} was not computed by this tool: no derivedFrom map, so nothing can be re-checked`));
+    console.log(`human command: node pipeline/bin/pipeline.mjs gate G12 --builtin metrics`);
+    process.exit(3);
+  }
+  const stale = [];
+  for (const [key, src] of Object.entries(doc.derivedFrom)) {
+    if (!src || !src.path) {
+      stale.push(`${key}: no path recorded, so it cannot be checked`);
+      continue;
+    }
+    if (!fs.existsSync(src.path)) {
+      stale.push(`${key}: ${src.path} is gone`);
+      continue;
+    }
+    const now = sha256(fs.readFileSync(src.path, "utf8"));
+    if (now !== src.sha256) stale.push(`${key}: ${src.path} changed since the metrics were computed`);
+  }
+  if (stale.length) {
+    console.log(paint.red(`STALE: ${checkIn} no longer describes its sources`));
+    for (const line of stale) console.log(`  PROBLEM ${line}`);
+    console.log(`RESULT: FAIL — the numbers in ${checkIn} are a claim about files that have moved`);
+    console.log(`human command: node pipeline/bin/pipeline.mjs gate G12 --builtin metrics`);
+    process.exit(1);
+  }
+  console.log(`metrics: ${checkIn} still matches every source it was computed from (${Object.keys(doc.derivedFrom).length} source(s))`);
+  console.log("RESULT: PASS");
+  process.exit(0);
+}
 
 function notVerified(reason, human) {
   console.log(paint.yellow(`NOT_VERIFIED: ${reason}`));

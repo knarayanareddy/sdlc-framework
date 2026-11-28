@@ -37,6 +37,15 @@ docs/{00-intake,00-control,01-research,02-spec,03-design,04-architecture,
 If the pipeline lives outside the product, pass `--cwd` on every call or copy
 `pipeline/` into the product.
 
+`init` also pins **who built the software** into the genesis entry — from `--builder-family`,
+`independence.builderFamily` or `PIPELINE_BUILDER_MODEL`. Independence is judged against that
+pin, not against a config field that can be edited later. If it was unknown at init, a human pins
+it without re-initialising:
+
+```bash
+PIPELINE_HUMAN=1 node pipeline/bin/pipeline.mjs attest --builder-family anthropic --attested-by "Ada Lovelace"
+```
+
 ## 2 · Drive the phases
 
 One phase per fresh agent session. The orchestrator refuses to start a phase whose
@@ -127,6 +136,10 @@ node pipeline/bin/pipeline.mjs verify        # re-runs every recorded gate, name
 node pipeline/bin/pipeline.mjs status        # ledger chain + gate table + missing context manifests
 node pipeline/tools/gate-ledger.mjs verify --path docs/gate-ledger.jsonl
 ```
+
+`verify` also re-hashes the sources `docs/12-eval/metrics.json` says it was computed from, and
+blocks with the name of the file that moved. The orchestrator refreshes that snapshot whenever it
+writes progress or the ledger, so a stale file means something changed it from outside.
 
 ## 6 · Finishing
 

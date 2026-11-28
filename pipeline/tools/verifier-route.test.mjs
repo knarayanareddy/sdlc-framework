@@ -321,7 +321,9 @@ test("independence is NOT_VERIFIED when the builder's family is unknown, never P
   assert.doesNotMatch(r.stdout, /RESULT: PASS/);
 });
 
-test("the builder family is derived from PIPELINE_BUILDER_MODEL when it is not declared", () => {
+test("a builder family from the environment is NOT_VERIFIED until a human pins it", () => {
+  // B-31: the environment is editable by the builder, so it cannot be the standard every
+  // verifier is judged against. It has to be pinned in the ledger (genesis or `pipeline attest`).
   const d = tmp();
   const ledger = path.join(d, "l.jsonl");
   seedLedger(ledger, [["G7", "gpt-5"], ["G9", "claude-opus"]]);
@@ -330,10 +332,25 @@ test("the builder family is derived from PIPELINE_BUILDER_MODEL when it is not d
     cwd: repoRoot,
     env: { ...process.env, PIPELINE_BUILDER_MODEL: "claude-sonnet-4" },
   });
-  assert.equal(res.status, 1, "the same-family verifier must be caught, not waved through");
+  assert.equal(res.status, 3, res.stdout + res.stderr);
+  assert.match(res.stdout, /not pinned in the ledger/);
+  assert.match(res.stdout, /pipeline\.mjs attest --builder-family anthro[a-z]*/);
+});
+
+test("a pinned builder family is used, and a same-family verifier is still caught", () => {
+  const d = tmp();
+  const ledger = path.join(d, "l.jsonl");
+  appendLedger(ledger, { phase: "00", gate: "GENESIS", status: "passed", command: "pipeline init", exitCode: 0, builderFamily: "anthropic" });
+  seedLedger(ledger, [["G7", "gpt-5"], ["G9", "claude-opus"]]);
+  const res = spawnSync("node", [indep, "--ledger", ledger, "--require", "G7,G9", "--json"], {
+    encoding: "utf8",
+    cwd: repoRoot,
+    env: { ...process.env, PIPELINE_BUILDER_MODEL: "" },
+  });
+  assert.equal(res.status, 1, res.stdout + res.stderr);
   const out = JSON.parse(res.stdout);
   assert.equal(out.builderFamily, "anthropic");
-  assert.equal(out.builderFamilySource, 'model id "claude-sonnet-4"');
+  assert.match(out.builderFamilySource, /pinned in the ledger genesis/);
   assert.equal(out.rows.find((x) => x.gate === "G9").state, "SAME_FAMILY");
   assert.equal(out.rows.find((x) => x.gate === "G7").state, "INDEPENDENT");
 });
